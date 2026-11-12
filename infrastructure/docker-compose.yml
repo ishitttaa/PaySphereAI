@@ -1,0 +1,81 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────
+# PaySphere Local Development Stack
+#
+# Starts: PostgreSQL + Redis (Kafka added in a later milestone)
+#
+# Usage:
+#   docker compose up -d postgres redis    ← start only DB + Redis
+#   docker compose up -d                   ← start everything
+#   docker compose down                    ← stop and remove containers
+#   docker compose down -v                 ← also removes data volumes
+#
+# IMPORTANT: Backend is NOT in this file yet. Run it with:
+#   cd backend && mvn spring-boot:run
+# This lets you restart the backend quickly without rebuilding containers.
+# ─────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── PostgreSQL 16 ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: paysphere-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: paysphere_dev
+      POSTGRES_USER: paysphere
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme_local_only}
+    ports:
+      - "5432:5432"     # Expose on host so you can use pgAdmin or psql
+    volumes:
+      # Named volume: data persists between docker compose down / up
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paysphere -d paysphere_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Redis 7 ───────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: paysphere-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes  # Enable AOF persistence
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ── pgAdmin (optional GUI for exploring the database) ─────────
+  # Access at: http://localhost:5050
+  # Login: admin@paysphere.local / admin
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: paysphere-pgadmin
+    restart: unless-stopped
+    profiles: ["tools"]    # Only starts with: docker compose --profile tools up
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@paysphere.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+# ── Named volumes (data persists across container restarts) ────────
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local

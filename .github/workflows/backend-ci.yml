@@ -1,0 +1,85 @@
+name: PaySphere Backend CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/**'
+
+jobs:
+  build-and-test:
+    name: Build, Test & Package
+    runs-on: ubuntu-latest
+
+    # Services run as Docker containers alongside the job
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: paysphere_test
+          POSTGRES_USER: paysphere_test
+          POSTGRES_PASSWORD: paysphere_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21 (Temurin LTS)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # Testcontainers can use the service container OR spin its own.
+      # We pass DB details as env vars so Testcontainers uses the GHA service.
+      # Actually, for Testcontainers we let it manage its own containers.
+      # Docker is available on ubuntu-latest runners by default.
+
+      - name: Build and run tests
+        working-directory: backend
+        env:
+          # Testcontainers will use Docker to spin up its own PostgreSQL.
+          # We do NOT point it at the service DB above — that's for future use
+          # when we add non-Testcontainers integration tests.
+          RAZORPAY_KEY_ID: rzp_test_placeholder_for_ci
+          RAZORPAY_KEY_SECRET: test_secret_placeholder
+          RAZORPAY_WEBHOOK_SECRET: test_webhook_placeholder
+          RAZORPAY_MODE: test
+          JWT_SECRET: ci_jwt_secret_that_is_at_least_64_characters_long_for_testing_1234
+          # These are overridden by Testcontainers @DynamicPropertySource
+          DATABASE_URL: jdbc:postgresql://localhost:5432/paysphere_test
+          DB_USER: paysphere_test
+          DB_PASSWORD: paysphere_test_password
+        run: mvn -B verify --no-transfer-progress
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        if: always()   # Upload even if tests fail — so you can debug
+        with:
+          name: test-reports
+          path: backend/target/surefire-reports/
+          retention-days: 7
+
+      - name: Check for secret leakage in build output
+        working-directory: backend
+        run: |
+          # Grep the Maven log for obvious secret patterns.
+          # Real secret scanning should use a dedicated tool (truffleHog, etc.)
+          if grep -r "rzp_live_" target/ 2>/dev/null; then
+            echo "::error::Live Razorpay key found in build output!"
+            exit 1
+          fi
+          echo "No live credentials detected in build output."
