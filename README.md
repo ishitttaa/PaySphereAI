@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # PaySphere
 
 > **Enterprise Payment Orchestration, Reconciliation, and Double-Entry Ledger Platform**
@@ -92,3 +93,6 @@ mvn test "-Dtest=OrderServiceTest,LedgerServiceTest,RiskServiceTest,WebhookServi
 2. **Cryptographic Signatures**: Razorpay callbacks and webhooks are validated using HMAC-SHA256 cryptographic verification before any state update.
 3. **Double-Entry Accounting Invariant**: Every financial transaction enforces `totalDebits == totalCredits`. Imbalances throw runtime exceptions and trigger rollback.
 4. **Idempotent Webhooks & Refunds**: Unique Razorpay event IDs and idempotency keys ensure at-least-once deliveries are never processed twice.
+=======
+# PaySphereAI
+>>>>>>> cc391f65f9f68965a07a60fc6153ace08e883ea6
