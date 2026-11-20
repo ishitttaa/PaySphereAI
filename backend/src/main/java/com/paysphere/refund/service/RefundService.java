@@ -1,5 +1,5 @@
 package com.paysphere.refund.service;
-
+import com.paysphere.ledger.service.LedgerService;
 import com.paysphere.common.exception.BusinessException;
 import com.paysphere.common.exception.ResourceNotFoundException;
 import com.paysphere.gateway.PaymentGateway;
@@ -44,7 +44,7 @@ public class RefundService {
     private final PaymentRepository paymentRepository;
     private final BusinessOrderRepository orderRepository;
     private final PaymentGateway paymentGateway;
-
+    private final LedgerService ledgerService;
     /**
      * Initiate a refund for a captured payment.
      *
@@ -145,7 +145,11 @@ public class RefundService {
             refund.setStatus(RefundStatus.FAILED);
         }
 
-        return toRefundResponse(refundRepository.save(refund));
+        refund = refundRepository.save(refund);
+        if (refund.getStatus() == RefundStatus.PROCESSED) {
+            ledgerService.postRefund(refund.getId(), refund.getAmountPaise(), refund.getCurrency());
+        }
+        return toRefundResponse(refund);
     }
 
     /** Get all refunds for a payment. */

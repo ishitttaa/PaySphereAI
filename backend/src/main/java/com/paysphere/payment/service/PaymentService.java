@@ -1,6 +1,5 @@
 package com.paysphere.payment.service;
-
-import com.paysphere.common.exception.BusinessException;
+import com.paysphere.ledger.service.LedgerService;
 import com.paysphere.common.exception.ResourceNotFoundException;
 import com.paysphere.common.exception.SignatureVerificationException;
 import com.paysphere.gateway.PaymentGateway;
@@ -48,7 +47,7 @@ public class PaymentService {
     private final PaymentRepository paymentRepository;
     private final BusinessOrderRepository orderRepository;
     private final PaymentGateway paymentGateway;
-
+    private final LedgerService ledgerService;
     /**
      * Verify and capture a payment from Razorpay checkout callback.
      *
@@ -108,6 +107,8 @@ public class PaymentService {
         log.info("Payment captured: paymentId={}, orderRef={}, amount={}p",
                 payment.getId(), order.getOrderReference(), payment.getAmountPaise());
 
+        ledgerService.postPaymentCaptured(payment.getId(), payment.getAmountPaise(), payment.getCurrency());
+
         return toPaymentResponse(payment);
     }
 
@@ -143,8 +144,8 @@ public class PaymentService {
                 .signatureVerified(false)  // webhook doesn't carry payment signature
                 .build();
 
-        paymentRepository.save(payment);
-
+        payment=paymentRepository.save(payment);
+        ledgerService.postPaymentCaptured(payment.getId(), payment.getAmountPaise(), payment.getCurrency());
         if (order.canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)) {
             order.transitionTo(BusinessOrderStatus.PAYMENT_CAPTURED);
             orderRepository.save(order);

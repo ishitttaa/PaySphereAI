@@ -68,11 +68,11 @@ public class WebhookController {
             log.warn("Webhook rejected: invalid signature");
             return ResponseEntity.badRequest()
                     .body(ApiResponse.failure("Invalid webhook signature"));
-        } catch (Exception e) {
-            // Processing failed but we return 200 so Razorpay doesn't retry
-            // Our FAILED event record handles retry logic internally
+        }catch (Exception e) {
+            // Processing failed. Return 500 so Razorpay retries delivery.
             log.error("Webhook processing error: {}", e.getMessage(), e);
-            return ResponseEntity.ok(ApiResponse.success("Acknowledged with error"));
+            return ResponseEntity.status(org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(ApiResponse.failure("Processing failed, please retry"));
         }
     }
 }
