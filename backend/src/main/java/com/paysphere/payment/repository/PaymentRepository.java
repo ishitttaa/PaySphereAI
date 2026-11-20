@@ -1,5 +1,8 @@
 package com.paysphere.payment.repository;
-
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import com.paysphere.payment.entity.Payment;
 import com.paysphere.payment.entity.PaymentStatus;
 import org.springframework.data.domain.Page;
@@ -27,4 +30,7 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     Page<Payment> findByStatusOrderByCreatedAtDesc(PaymentStatus status, Pageable pageable);
 
     long countByStatus(PaymentStatus status);
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Payment p where p.id = :id")
+    Optional<Payment> findByIdForUpdate(@Param("id") UUID id);
 }

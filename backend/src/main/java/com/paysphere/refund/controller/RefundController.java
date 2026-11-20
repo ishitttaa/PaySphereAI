@@ -34,11 +34,14 @@ public class RefundController {
     @PostMapping
     @Operation(summary = "Initiate a refund",
                description = "Creates a refund for a CAPTURED payment. Supports partial refunds.")
-    public ResponseEntity<ApiResponse<RefundResponse>> createRefund(
-            @Valid @RequestBody CreateRefundRequest request) {
-        RefundResponse refund = refundService.createRefund(request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(refund));
+       public ResponseEntity<ApiResponse<RefundResponse>> createRefund(
+            @Valid @RequestBody CreateRefundRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        RefundResponse refund = refundService.createRefund(request, idempotencyKey);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success(refund));
     }
+
 
     @GetMapping("/{id}")
     @Operation(summary = "Get refund by ID")
