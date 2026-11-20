@@ -1,5 +1,5 @@
 package com.paysphere.refund.service;
-
+import com.paysphere.ledger.service.LedgerService;
 import com.paysphere.common.exception.BusinessException;
 import com.paysphere.common.exception.ResourceNotFoundException;
 import com.paysphere.gateway.PaymentGateway;
@@ -44,7 +44,7 @@ public class RefundService {
     private final PaymentRepository paymentRepository;
     private final BusinessOrderRepository orderRepository;
     private final PaymentGateway paymentGateway;
-
+    private final LedgerService ledgerService;
     /**
      * Initiate a refund for a captured payment.
      *
@@ -56,39 +56,62 @@ public class RefundService {
      * 5. Update refund status and payment's amountRefundedPaise
      * 6. Transition order status
      */
-    @Transactional
+        @Transactional
     public RefundResponse createRefund(CreateRefundRequest request) {
+        return createRefund(request, null);
+    }
+
+    @Transactional
+    public RefundResponse createRefund(CreateRefundRequest request, String clientIdempotencyKey) {
         log.info("Creating refund for paymentId={}, amount={}p",
                 request.paymentId(), request.amountPaise());
 
-        // Step 1: Load and validate the payment
-        Payment payment = paymentRepository.findById(request.paymentId())
+        // Step 0: Decide the idempotency key.
+        String idempotencyKey;
+        if (clientIdempotencyKey != null && !clientIdempotencyKey.isBlank()) {
+            if (!clientIdempotencyKey.matches("^[A-Za-z0-9_-]{8,64}$")) {
+                throw new BusinessException("INVALID_IDEMPOTENCY_KEY",
+                        "Idempotency-Key must be 8-64 characters: letters, digits, '-' or '_'");
+            }
+            idempotencyKey = "client-" + clientIdempotencyKey;
+        } else {
+            log.warn("Refund requested without Idempotency-Key: duplicate submissions are NOT protected");
+            idempotencyKey = "server-" + UUID.randomUUID();
+        }
+
+        // Step 1: Load the payment and LOCK its row, so two refund requests
+        // for the same payment run one after the other, never together.
+        Payment payment = paymentRepository.findByIdForUpdate(request.paymentId())
                 .orElseThrow(() -> new ResourceNotFoundException("Payment", request.paymentId()));
+
+        // Step 1b: Same key seen before? Return the earlier refund.
+        Refund existing = refundRepository.findByIdempotencyKey(idempotencyKey).orElse(null);
+        if (existing != null) {
+            if (!existing.getPayment().getId().equals(payment.getId())) {
+                throw new BusinessException("IDEMPOTENCY_KEY_REUSED",
+                        "This Idempotency-Key was already used for a different payment");
+            }
+            log.info("Duplicate refund request, returning existing refund {}", existing.getId());
+            return toRefundResponse(existing);
+        }
 
         if (payment.getStatus() != PaymentStatus.CAPTURED) {
             throw new BusinessException("INVALID_PAYMENT_STATUS",
                     "Can only refund CAPTURED payments. Current status: " + payment.getStatus());
         }
 
-        // Step 2: Determine refund amount
-        long refundAmount = request.amountPaise() != null
-                ? request.amountPaise()
-                : payment.getAmountPaise();  // Full refund if amount not specified
-
+        // Step 2: Work out the amount. No amount given = refund whatever is left.
         long alreadyRefunded = payment.getAmountRefundedPaise();
         long remainingBalance = payment.getAmountPaise() - alreadyRefunded;
+        long refundAmount = request.amountPaise() != null ? request.amountPaise() : remainingBalance;
 
-        if (refundAmount > remainingBalance) {
+        if (refundAmount <= 0 || refundAmount > remainingBalance) {
             throw new BusinessException("REFUND_EXCEEDS_BALANCE",
-                    String.format("Refund amount %dp exceeds remaining balance %dp",
+                    String.format("Refund amount %dp is not allowed. Remaining balance %dp",
                             refundAmount, remainingBalance));
         }
 
-        // Step 3: Build idempotency key
-        String idempotencyKey = "refund-" + payment.getId() + "-" + refundAmount + "-"
-                + UUID.randomUUID().toString().substring(0, 8);
-
-        // Step 4: Create DB record (PENDING)
+        // Step 3: Save the refund as PENDING before calling Razorpay.
         BusinessOrder order = payment.getBusinessOrder();
         Refund refund = Refund.builder()
                 .payment(payment)
@@ -102,52 +125,64 @@ public class RefundService {
                 .build();
         refund = refundRepository.save(refund);
 
-        // Step 5: Call Razorpay
+        // Step 4: Call Razorpay. Only the network call sits inside this try.
+        Map<String, Object> razorpayRefund = null;
         try {
-            Map<String, Object> razorpayRefund = paymentGateway.createRefund(
-                    payment.getRazorpayPaymentId(),
-                    refundAmount,
-                    request.reason(),
-                    idempotencyKey
-            );
+            razorpayRefund = paymentGateway.createRefund(
+                    payment.getRazorpayPaymentId(), refundAmount, request.reason(), idempotencyKey);
+        } catch (Exception e) {
+            if (isDefinitiveFailure(e)) {
+                log.error("Refund rejected by Razorpay: refundId={}, error={}", refund.getId(), e.getMessage());
+                refund.setStatus(RefundStatus.FAILED);
+            } else {
+                // Timeout or network error: Razorpay may or may not have refunded.
+                // Do NOT mark FAILED. Leave PENDING for the webhook / reconciliation.
+                log.error("Refund outcome UNKNOWN, left PENDING: refundId={}, error={}",
+                        refund.getId(), e.getMessage());
+            }
+        }
 
-            String razorpayRefundId = (String) razorpayRefund.get("id");
-            refund.setRazorpayRefundId(razorpayRefundId);
+        // Step 5: Razorpay accepted it: update refund, payment and order.
+        if (razorpayRefund != null) {
+            refund.setRazorpayRefundId((String) razorpayRefund.get("id"));
             refund.setStatus(RefundStatus.PROCESSED);
             refund.setProcessedAt(Instant.now());
 
-            // Update payment's refunded amount
-            payment.setAmountRefundedPaise(alreadyRefunded + refundAmount);
-            paymentRepository.save(payment);
-
-            // Transition order status
             long newTotalRefunded = alreadyRefunded + refundAmount;
+            payment.setAmountRefundedPaise(newTotalRefunded);
             if (newTotalRefunded >= payment.getAmountPaise()) {
                 payment.setStatus(PaymentStatus.REFUNDED);
-                paymentRepository.save(payment);
                 if (order.canTransitionTo(BusinessOrderStatus.REFUNDED)) {
                     order.transitionTo(BusinessOrderStatus.REFUNDED);
                     orderRepository.save(order);
                 }
-            } else {
-                // Partial refund
-                if (order.canTransitionTo(BusinessOrderStatus.PARTIALLY_REFUNDED)) {
-                    order.transitionTo(BusinessOrderStatus.PARTIALLY_REFUNDED);
-                    orderRepository.save(order);
-                }
+            } else if (order.canTransitionTo(BusinessOrderStatus.PARTIALLY_REFUNDED)) {
+                order.transitionTo(BusinessOrderStatus.PARTIALLY_REFUNDED);
+                orderRepository.save(order);
             }
+            paymentRepository.save(payment);
 
             log.info("Refund processed: refundId={}, razorpayRefundId={}, amount={}p",
-                    refund.getId(), razorpayRefundId, refundAmount);
-
-        } catch (Exception e) {
-            log.error("Refund API call failed: {}", e.getMessage(), e);
-            refund.setStatus(RefundStatus.FAILED);
+                    refund.getId(), refund.getRazorpayRefundId(), refundAmount);
         }
 
-        return toRefundResponse(refundRepository.save(refund));
+        refund = refundRepository.save(refund);
+
+        // Step 6: Ledger entry only once the money has really been refunded.
+        if (refund.getStatus() == RefundStatus.PROCESSED) {
+            ledgerService.postRefund(refund.getId(), refund.getAmountPaise(), refund.getCurrency());
+        }
+
+        return toRefundResponse(refund);
     }
 
+    /** A clear 4xx from Razorpay means nothing was refunded. Anything else is uncertain. */
+    private boolean isDefinitiveFailure(Exception e) {
+        Throwable cause = e.getCause() != null ? e.getCause() : e;
+        String msg = cause.getMessage() == null ? "" : cause.getMessage();
+        return msg.startsWith("Razorpay API error: HTTP 4")
+                && !msg.startsWith("Razorpay API error: HTTP 409");
+    }
     /** Get all refunds for a payment. */
     @Transactional(readOnly = true)
     public List<RefundResponse> getRefundsForPayment(UUID paymentId) {

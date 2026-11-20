@@ -61,7 +61,6 @@ public class WebhookService {
     public void processWebhook(String rawPayload, String signature) {
 
         // Step 1: Verify signature BEFORE parsing the payload
-        // WHY raw payload? Razorpay signs the raw bytes — any parsing could alter whitespace.
         boolean signatureValid = paymentGateway.verifyWebhookSignature(rawPayload, signature);
         if (!signatureValid) {
             log.warn("SECURITY: Webhook received with invalid signature. Rejecting.");
@@ -75,44 +74,52 @@ public class WebhookService {
 
         log.info("Webhook received: eventId={}, eventType={}", eventId, eventType);
 
-        // Step 3: Idempotency check
+        // Step 3: Idempotency. Skip only events that were already PROCESSED.
+        // An event that FAILED earlier (or was left PENDING by a crash) is retried.
+        WebhookEvent event;
         if (webhookEventRepository.existsByRazorpayEventId(eventId)) {
-            log.info("Webhook duplicate detected, skipping: eventId={}", eventId);
-            // Still mark as SKIPPED in the event store
-            webhookEventRepository.findByRazorpayEventId(eventId).ifPresent(evt -> {
-                if (evt.getStatus() == WebhookStatus.PENDING) {
-                    evt.setStatus(WebhookStatus.SKIPPED);
-                    webhookEventRepository.save(evt);
-                }
-            });
-            return;
+            WebhookEvent existing = webhookEventRepository.findByRazorpayEventId(eventId).orElse(null);
+            if (existing == null || existing.getStatus() == WebhookStatus.PROCESSED) {
+                log.info("Webhook duplicate detected, skipping: eventId={}", eventId);
+                return;
+            }
+            log.info("Retrying previously unfinished webhook: eventId={}", eventId);
+            event = existing;
+        } else {
+            try {
+                event = webhookEventRepository.save(WebhookEvent.builder()
+                        .razorpayEventId(eventId)
+                        .eventType(eventType)
+                        .payload(rawPayload)
+                        .status(WebhookStatus.PENDING)
+                        .signatureVerified(true)
+                        .receivedAt(Instant.now())
+                        .build());
+            } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                // Two deliveries arrived at the same moment; the database unique
+                // constraint let only one through.
+                log.info("Webhook duplicate (concurrent), skipping: eventId={}", eventId);
+                return;
+            }
         }
 
-        // Step 4: Store the event (PENDING state)
-        WebhookEvent event = WebhookEvent.builder()
-                .razorpayEventId(eventId)
-                .eventType(eventType)
-                .payload(rawPayload)
-                .status(WebhookStatus.PENDING)
-                .signatureVerified(true)  // We verified above
-                .receivedAt(Instant.now())
-                .build();
-        event = webhookEventRepository.save(event);
-
-        // Step 5: Process based on event type
+        // Step 4: Process. Each step commits on its own, so a failure here
+        // cannot erase the stored event.
         try {
             processEventByType(eventType, payload);
             event.setStatus(WebhookStatus.PROCESSED);
             event.setProcessedAt(Instant.now());
+            event.setErrorMessage(null);
+            webhookEventRepository.save(event);
         } catch (Exception e) {
             log.error("Webhook processing failed: eventId={}, error={}", eventId, e.getMessage(), e);
+            String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             event.setStatus(WebhookStatus.FAILED);
-            event.setErrorMessage(e.getMessage());
+            event.setErrorMessage(msg.length() > 500 ? msg.substring(0, 500) : msg);
+            webhookEventRepository.save(event);
+            throw new IllegalStateException("Webhook processing failed for event " + eventId, e);
         }
-
-        webhookEventRepository.save(event);
     }
-
     // ── Event type handlers ───────────────────────────────────────────────────
 
     private void processEventByType(String eventType, JSONObject payload) {

@@ -90,4 +90,40 @@ class WebhookServiceTest {
         assertThat(lastSaved.getStatus()).isEqualTo(WebhookStatus.PROCESSED);
         assertThat(lastSaved.getRazorpayEventId()).isEqualTo("evt_test_new");
     }
+        @Test
+    @DisplayName("processWebhook records FAILED and throws so Razorpay retries")
+    void testFailureIsRecordedAndRethrown() {
+        String payload = "{\"id\":\"evt_fail\",\"event\":\"payment.captured\",\"payload\":{\"payment\":{\"entity\":{\"id\":\"pay_1\",\"order_id\":\"order_1\",\"amount\":10000}}}}";
+        when(paymentGateway.verifyWebhookSignature(payload, "sig")).thenReturn(true);
+        when(webhookEventRepository.existsByRazorpayEventId("evt_fail")).thenReturn(false);
+        when(webhookEventRepository.save(any(WebhookEvent.class))).thenAnswer(i -> i.getArgument(0));
+        doThrow(new RuntimeException("ledger down"))
+                .when(paymentService).handleWebhookCapture(any(), any(), any());
+
+        assertThatThrownBy(() -> webhookService.processWebhook(payload, "sig"))
+                .isInstanceOf(IllegalStateException.class);
+
+        ArgumentCaptor<WebhookEvent> captor = ArgumentCaptor.forClass(WebhookEvent.class);
+        verify(webhookEventRepository, atLeastOnce()).save(captor.capture());
+        WebhookEvent last = captor.getAllValues().get(captor.getAllValues().size() - 1);
+        assertThat(last.getStatus()).isEqualTo(WebhookStatus.FAILED);
+        assertThat(last.getErrorMessage()).contains("ledger down");
+    }
+
+    @Test
+    @DisplayName("processWebhook retries an event that previously FAILED")
+    void testFailedEventIsRetried() {
+        String payload = "{\"id\":\"evt_retry\",\"event\":\"payment.captured\",\"payload\":{\"payment\":{\"entity\":{\"id\":\"pay_2\",\"order_id\":\"order_2\",\"amount\":10000}}}}";
+        WebhookEvent failed = WebhookEvent.builder()
+                .razorpayEventId("evt_retry").status(WebhookStatus.FAILED).build();
+        when(paymentGateway.verifyWebhookSignature(payload, "sig")).thenReturn(true);
+        when(webhookEventRepository.existsByRazorpayEventId("evt_retry")).thenReturn(true);
+        when(webhookEventRepository.findByRazorpayEventId("evt_retry")).thenReturn(java.util.Optional.of(failed));
+        when(webhookEventRepository.save(any(WebhookEvent.class))).thenAnswer(i -> i.getArgument(0));
+
+        webhookService.processWebhook(payload, "sig");
+
+        verify(paymentService).handleWebhookCapture(any(), any(), any());
+        assertThat(failed.getStatus()).isEqualTo(WebhookStatus.PROCESSED);
+    }
 }

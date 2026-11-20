@@ -33,7 +33,7 @@ import java.util.UUID;
  *   CR  REVENUE              [amount]   (revenue recognized)
  *
  * Journal entries for refund:
- *   DR  REFUNDS_PAYABLE      [amount]   (liability — we owe customer)
+ *   DR  REVENUE    [amount]   (revenue reversed)
  *   CR  RAZORPAY_RECEIVABLE  [amount]   (reduces what Razorpay owes us)
  */
 @Slf4j
@@ -50,6 +50,7 @@ public class LedgerService {
      */
     @Transactional
     public void postPaymentCaptured(UUID paymentId, long amountPaise, String currency) {
+        if (amountPaise <= 0) throw new IllegalArgumentException("Amount must be positive");
         String idempotencyKey = "PAYMENT-" + paymentId;
         if (txRepo.existsByIdempotencyKey(idempotencyKey)) {
             log.info("Ledger: payment already posted, skipping: {}", paymentId);
@@ -89,15 +90,16 @@ public class LedgerService {
      */
     @Transactional
     public void postRefund(UUID refundId, long amountPaise, String currency) {
+        if (amountPaise <= 0) throw new IllegalArgumentException("Amount must be positive");
         String idempotencyKey = "REFUND-" + refundId;
         if (txRepo.existsByIdempotencyKey(idempotencyKey)) {
             log.info("Ledger: refund already posted, skipping: {}", refundId);
             return;
         }
 
-        LedgerAccount refundsPayable = getAccount("REFUNDS_PAYABLE");
-        LedgerAccount receivable     = getAccount("RAZORPAY_RECEIVABLE");
-
+        LedgerAccount revenue    = getAccount("REVENUE");
+        LedgerAccount receivable = getAccount("RAZORPAY_RECEIVABLE");
+        
         LedgerTransaction tx = LedgerTransaction.builder()
                 .sourceType("REFUND")
                 .sourceId(refundId)
@@ -109,10 +111,10 @@ public class LedgerService {
                 .build();
 
         List<LedgerEntry> entries = List.of(
-            buildEntry(tx, refundsPayable, EntryType.DEBIT,  amountPaise, currency,
-                       "Refund payable — " + refundId),
-            buildEntry(tx, receivable,     EntryType.CREDIT, amountPaise, currency,
-                       "Reduces Razorpay receivable — refund " + refundId)
+            buildEntry(tx, revenue,    EntryType.DEBIT,  amountPaise, currency,
+               "Revenue reversed — refund " + refundId),
+            buildEntry(tx, receivable, EntryType.CREDIT, amountPaise, currency,
+               "Reduces Razorpay receivable — refund " + refundId)
         );
 
         validateBalance(entries);
@@ -128,6 +130,8 @@ public class LedgerService {
      */
     @Transactional
     public void postSettlement(UUID settlementId, long grossPaise, long feesPaise, String currency) {
+    if (grossPaise <= 0 || feesPaise < 0 || feesPaise > grossPaise)
+       throw new IllegalArgumentException("Invalid settlement amounts");
         String idempotencyKey = "SETTLEMENT-" + settlementId;
         if (txRepo.existsByIdempotencyKey(idempotencyKey)) {
             log.info("Ledger: settlement already posted, skipping: {}", settlementId);
