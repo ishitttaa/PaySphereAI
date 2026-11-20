@@ -1,4 +1,5 @@
 package com.paysphere.payment.service;
+import com.paysphere.common.exception.BusinessException;
 import com.paysphere.ledger.service.LedgerService;
 import com.paysphere.common.exception.ResourceNotFoundException;
 import com.paysphere.common.exception.SignatureVerificationException;
@@ -95,7 +96,19 @@ public class PaymentService {
 
         // Step 3: Fetch full payment details from Razorpay
         Map<String, Object> paymentDetails = paymentGateway.fetchPayment(request.razorpayPaymentId());
-
+        // Step 3b: Trust Razorpay's record, not the browser.
+        long expectedAmount = order.getAmountPaise();
+        long paidAmount = getLong(paymentDetails, "amount");
+        String paidCurrency = getString(paymentDetails, "currency", "");
+        if (paidAmount != expectedAmount || !order.getCurrency().equals(paidCurrency)) {
+            log.error("SECURITY: amount mismatch for orderRef={}: expected {}p {}, Razorpay reports {}p {}",
+                    order.getOrderReference(), expectedAmount, order.getCurrency(), paidAmount, paidCurrency);
+            throw new BusinessException("AMOUNT_MISMATCH", "Paid amount does not match the order amount");
+        }
+        if (!Boolean.TRUE.equals(paymentDetails.get("captured"))) {
+            throw new BusinessException("PAYMENT_NOT_CAPTURED",
+                    "Payment is not captured yet (status: " + paymentDetails.get("status") + ")");
+        }
         // Step 4: Create the Payment record in our DB
         Payment payment = buildPaymentFromRazorpayData(order, request, paymentDetails);
         payment = paymentRepository.save(payment);
@@ -132,7 +145,11 @@ public class PaymentService {
             log.warn("Webhook: no order found for razorpayOrderId={}", razorpayOrderId);
             return;
         }
-
+        long webhookAmount = getLong(paymentData, "amount");
+        if (order.getAmountPaise() == null || webhookAmount != order.getAmountPaise()) {
+            throw new BusinessException("AMOUNT_MISMATCH",
+                    "Webhook amount " + webhookAmount + " does not match order " + order.getOrderReference());
+        }
         Payment payment = Payment.builder()
                 .businessOrder(order)
                 .razorpayPaymentId(razorpayPaymentId)
