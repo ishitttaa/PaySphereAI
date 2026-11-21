@@ -4,7 +4,9 @@ import com.paysphere.user.entity.User;
 import com.paysphere.user.entity.UserStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
-
+import java.util.List;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -56,4 +58,7 @@ public interface UserRepository extends JpaRepository<User, UUID> {
      * Generates: SELECT COUNT(*) FROM users WHERE status = 'ACTIVE'
      */
     long countByStatus(UserStatus status);
+    @Query(value = "SELECT r.name FROM roles r JOIN user_role_assignments a ON a.role_id = r.id WHERE a.user_id = :userId",
+        nativeQuery = true)
+    List<String> findRoleNames(@Param("userId") UUID userId);
 }

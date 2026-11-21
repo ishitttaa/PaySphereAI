@@ -1,5 +1,6 @@
 package com.paysphere.gateway;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import com.paysphere.common.exception.SignatureVerificationException;
 import com.paysphere.config.RazorpayConfig;
 import lombok.RequiredArgsConstructor;
@@ -31,6 +32,7 @@ import java.util.Map;
 @Slf4j
 @Component
 @RequiredArgsConstructor
+@ConditionalOnProperty(name = "payment.gateway", havingValue = "razorpay", matchIfMissing = true)
 public class RazorpayAdapter implements PaymentGateway {
 
     private final RazorpayConfig config;

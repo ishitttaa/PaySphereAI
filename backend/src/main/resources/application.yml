@@ -116,3 +116,13 @@ razorpay:
   webhook-secret: ${RAZORPAY_WEBHOOK_SECRET:RAZORPAY_WEBHOOK_NOT_CONFIGURED}
   mode: ${RAZORPAY_MODE:test}
   base-url: https://api.razorpay.com/v1
+
+
+# ── JWT (staff login) ─────────────────────────────────────────────
+security:
+  jwt:
+    secret: ${JWT_SECRET}
+    expiry-seconds: ${JWT_EXPIRY_SECONDS:900}
+
+payment:
+  gateway: ${PAYMENT_GATEWAY:razorpay}
