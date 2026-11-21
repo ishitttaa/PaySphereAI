@@ -21,12 +21,11 @@ import jakarta.validation.constraints.Pattern;
 public record VerifyPaymentRequest(
 
         @NotBlank(message = "razorpay_payment_id is required")
-        @Pattern(regexp = "^pay_[A-Za-z0-9]+$", message = "Invalid razorpay_payment_id format")
+        @Pattern(regexp = "^pay_(?:sim_)?[A-Za-z0-9]+$", message = "Invalid razorpay_payment_id format")
         String razorpayPaymentId,
 
         @NotBlank(message = "razorpay_order_id is required")
-        @Pattern(regexp = "^order_[A-Za-z0-9]+$", message = "Invalid razorpay_order_id format")
-        String razorpayOrderId,
+        @Pattern(regexp = "^order_(?:sim_)?[A-Za-z0-9]+$", message = "Invalid razorpay_order_id format")
 
         @NotBlank(message = "razorpay_signature is required")
         String razorpaySignature
