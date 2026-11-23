@@ -76,10 +76,14 @@ jobs:
       - name: Check for secret leakage in build output
         working-directory: backend
         run: |
-          # Grep the Maven log for obvious secret patterns.
-          # Real secret scanning should use a dedicated tool (truffleHog, etc.)
-          if grep -r "rzp_live_" target/ 2>/dev/null; then
-            echo "::error::Live Razorpay key found in build output!"
+          # Look for something shaped like a real live Razorpay key (rzp_live_ followed by
+          # 10 or more letters/digits) in TEXT files only.
+          # -I skips compiled .class files, which legitimately contain the bare text
+          # "rzp_live_" from our own safety guard in RazorpayConfig.
+          # -l prints only file names, so a real key is never echoed into the CI log.
+          # Real secret scanning should use a dedicated tool (gitleaks, trufflehog).
+          if grep -rIlE "rzp_live_[A-Za-z0-9]{10,}" target/ src/ 2>/dev/null; then
+            echo "::error::Possible live Razorpay key found (see file names above)"
             exit 1
           fi
-          echo "No live credentials detected in build output."
+          echo "No live credentials detected."."
