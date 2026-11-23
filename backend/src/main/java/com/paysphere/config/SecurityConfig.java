@@ -1,64 +1,127 @@
 package com.paysphere.config;
 
+import com.paysphere.security.JwtAuthFilter;
+import com.paysphere.security.JwtService;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-/**
- * Spring Security Configuration — Milestone 1 baseline.
- *
- * In Milestone 1 we permit all requests so we can test the health endpoint
- * without authentication. We will replace this with JWT-based security
- * in a later milestone (Milestone 9: Authentication & Authorization).
- *
- * WHY configure this at all now?
- * Spring Boot auto-configures Basic Auth by default if no SecurityFilterChain
- * is provided. That would block our /api/v1/health test. We define an explicit
- * chain that permits everything for now — and we'll tighten it incrementally.
- *
- * IMPORTANT: The comment "MILESTONE 1 — OPEN" is a deliberate marker.
- * When we reach the auth milestone, we search for this marker and replace it.
- * This prevents accidentally shipping an open configuration to production.
- */
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
+
+@Slf4j
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
 
+    private static final String ADMIN = "PLATFORM_ADMIN";
+    private static final String OPERATOR = "PLATFORM_OPERATOR";
+
+    @Value("${SECURITY_MODE:strict}")
+    private String securityMode;
+
+    @Value("${APP_ENV:development}")
+    private String appEnv;
+
+    @Value("${CORS_ALLOWED_ORIGINS:http://localhost:5173}")
+    private String corsAllowedOrigins;
+
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, JwtService jwtService) throws Exception {
+        boolean production = "production".equalsIgnoreCase(appEnv);
+        boolean open = "open".equalsIgnoreCase(securityMode);
+        if (open && production) {
+            throw new IllegalStateException(
+                    "FATAL: SECURITY_MODE=open is not allowed when APP_ENV=production");
+        }
+
         http
-            // Disable CSRF for stateless REST API (we'll use JWT, not cookies)
             .csrf(AbstractHttpConfigurer::disable)
-
-            // Enable CORS for frontend applications
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .addFilterBefore(new JwtAuthFilter(jwtService), UsernamePasswordAuthenticationFilter.class)
+            .exceptionHandling(e -> e
+                .authenticationEntryPoint((req, res, ex) -> writeJson(res, 401, "Authentication required"))
+                .accessDeniedHandler((req, res, ex) -> writeJson(res, 403, "Not allowed for your role")));
 
-            // Stateless — no HTTP sessions. Every request must authenticate itself.
-            .sessionManagement(session ->
-                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        if (open) {
+            log.warn("SECURITY_MODE=open: ALL ENDPOINTS ARE PUBLIC. Development only.");
+            http.authorizeHttpRequests(a -> a.anyRequest().permitAll());
+        } else {
+            http.authorizeHttpRequests(auth -> {
+                // API docs: open while developing, closed in production
+                if (production) {
+                    auth.requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/api-docs/**").denyAll();
+                } else {
+                    auth.requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/api-docs/**").permitAll();
+                }
 
-            // MILESTONE 1 — OPEN: permit all endpoints while we build the foundation.
-            // This MUST be replaced with proper JWT authorization in Milestone 9.
-            .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+                // Public: no login needed
+                auth.requestMatchers(HttpMethod.GET, "/api/v1/health", "/actuator/health", "/actuator/health/**").permitAll();
+                auth.requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll();
+                auth.requestMatchers(HttpMethod.POST, "/api/v1/webhooks/razorpay").permitAll();   // protected by its own HMAC
+                auth.requestMatchers(HttpMethod.GET, "/api/v1/products", "/api/v1/products/**").permitAll();
+                auth.requestMatchers(HttpMethod.POST, "/api/v1/orders", "/api/v1/payments/verify").permitAll();
+                auth.requestMatchers("/api/v1/simulator/**").permitAll();   // exists only when PAYMENT_GATEWAY=simulator
 
+                // Admin only
+                auth.requestMatchers(HttpMethod.POST, "/api/v1/refunds", "/api/v1/settlements/record",
+                        "/api/v1/risk-flags/*/dismiss").hasRole(ADMIN);
+                auth.requestMatchers("/api/v1/audit-logs/**").hasRole(ADMIN);
+
+                // Staff: read-only views
+                auth.requestMatchers(HttpMethod.GET, "/api/v1/orders/**", "/api/v1/payments/**",
+                        "/api/v1/refunds/**", "/api/v1/ledger/**", "/api/v1/settlements/**",
+                        "/api/v1/risk-flags/**", "/api/v1/dashboard/**").hasAnyRole(ADMIN, OPERATOR);
+
+                // Anything not listed above is closed
+                auth.anyRequest().denyAll();
+            });
+        }
         return http.build();
     }
 
+    /** Stops Spring creating its own throw-away login user. Login happens only via /api/v1/auth/login. */
     @Bean
-    public org.springframework.web.cors.CorsConfigurationSource corsConfigurationSource() {
-        org.springframework.web.cors.CorsConfiguration configuration = new org.springframework.web.cors.CorsConfiguration();
-        configuration.setAllowedOriginPatterns(java.util.List.of("*"));
-        configuration.setAllowedMethods(java.util.List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
-        configuration.setAllowedHeaders(java.util.List.of("*"));
-        configuration.setAllowCredentials(false);
-        configuration.setMaxAge(3600L);
+    public UserDetailsService noDefaultUsers() {
+        return username -> {
+            throw new UsernameNotFoundException("Use /api/v1/auth/login");
+        };
+    }
 
-        org.springframework.web.cors.UrlBasedCorsConfigurationSource source = new org.springframework.web.cors.UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration);
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration config = new CorsConfiguration();
+        config.setAllowedOrigins(Arrays.stream(corsAllowedOrigins.split(","))
+                .map(String::trim).filter(s -> !s.isEmpty()).toList());
+        config.setAllowedMethods(List.of("GET", "POST", "OPTIONS"));
+        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Idempotency-Key"));
+        config.setAllowCredentials(false);
+        config.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", config);
         return source;
+    }
+
+    private static void writeJson(HttpServletResponse res, int status, String message) throws IOException {
+        res.setStatus(status);
+        res.setContentType("application/json");
+        res.getWriter().write("{\"success\":false,\"error\":\"" + message + "\"}");
     }
 }

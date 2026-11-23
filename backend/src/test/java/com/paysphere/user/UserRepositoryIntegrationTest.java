@@ -48,7 +48,7 @@ class UserRepositoryIntegrationTest extends BaseIntegrationTest {
                 .build();
 
         // When: we save it
-        User saved = userRepository.save(user);
+        User saved = userRepository.saveAndFlush(user);
 
         // Then: it has an auto-generated UUID
         assertThat(saved.getId())
@@ -132,4 +132,5 @@ class UserRepositoryIntegrationTest extends BaseIntegrationTest {
                 .as("Duplicate email should throw a constraint violation")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
+    
 }

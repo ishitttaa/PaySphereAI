@@ -31,7 +31,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <!-- Dependency versions (pinned explicitly for reproducibility) -->
-        <testcontainers.version>1.20.3</testcontainers.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
         <flyway.version>10.20.1</flyway.version>
         <springdoc.version>2.6.0</springdoc.version>
     </properties>
@@ -105,7 +105,24 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
-
+        
+          <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.12.6</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
         <!-- ══════════════════════════════════════════════════════ -->
         <!--  API DOCUMENTATION                                    -->
         <!-- ══════════════════════════════════════════════════════ -->

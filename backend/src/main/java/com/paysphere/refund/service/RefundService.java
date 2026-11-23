@@ -18,6 +18,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.paysphere.audit.service.AuditService;
 
 import java.time.Instant;
 import java.util.List;
@@ -45,6 +46,7 @@ public class RefundService {
     private final BusinessOrderRepository orderRepository;
     private final PaymentGateway paymentGateway;
     private final LedgerService ledgerService;
+    private final AuditService auditService;
     /**
      * Initiate a refund for a captured payment.
      *
@@ -167,7 +169,10 @@ public class RefundService {
         }
 
         refund = refundRepository.save(refund);
-
+        
+        auditService.record("REFUND_" + refund.getStatus(), "Refund", refund.getId(),
+                "Refund of " + refund.getAmountPaise() + "p on payment " + payment.getId(), "API");
+        
         // Step 6: Ledger entry only once the money has really been refunded.
         if (refund.getStatus() == RefundStatus.PROCESSED) {
             ledgerService.postRefund(refund.getId(), refund.getAmountPaise(), refund.getCurrency());

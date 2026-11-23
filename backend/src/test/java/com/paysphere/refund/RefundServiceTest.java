@@ -1,5 +1,6 @@
 package com.paysphere.refund;
 
+import com.paysphere.audit.service.AuditService;
 import com.paysphere.common.exception.BusinessException;
 import com.paysphere.gateway.PaymentGateway;
 import com.paysphere.ledger.service.LedgerService;
@@ -37,6 +38,7 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class RefundServiceTest {
 
+    @Mock private AuditService auditService;
     @Mock private RefundRepository refundRepository;
     @Mock private PaymentRepository paymentRepository;
     @Mock private BusinessOrderRepository orderRepository;

@@ -50,7 +50,24 @@ public class AuditService {
             log.error("Audit log write failed for action={}: {}", action, e.getMessage());
         }
     }
-
+        /**
+     * Record a money-related event INSIDE the caller's transaction.
+     * MANDATORY: fails loudly if there is no transaction. The audit row and the
+     * business change are then saved together, or not at all.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void record(String action, String entityType, UUID entityId,
+                       String description, String actor) {
+        String safeDescription = description != null && description.length() > 500
+                ? description.substring(0, 500) : description;
+        auditLogRepository.save(AuditLog.builder()
+                .action(action)
+                .entityType(entityType)
+                .entityId(entityId)
+                .description(safeDescription)
+                .actorEmail(actor)
+                .build());
+    }
     /** Log a system action (no user context). */
     @Async
     @Transactional(propagation = Propagation.REQUIRES_NEW)

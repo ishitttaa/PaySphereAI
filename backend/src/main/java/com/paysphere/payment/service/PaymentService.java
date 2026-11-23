@@ -1,4 +1,6 @@
 package com.paysphere.payment.service;
+import com.paysphere.audit.service.AuditService;
+import com.paysphere.risk.service.RiskService;
 import com.paysphere.common.exception.BusinessException;
 import com.paysphere.ledger.service.LedgerService;
 import com.paysphere.common.exception.ResourceNotFoundException;
@@ -44,7 +46,8 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class PaymentService {
-
+    private final RiskService riskService;
+    private final AuditService auditService;
     private final PaymentRepository paymentRepository;
     private final BusinessOrderRepository orderRepository;
     private final PaymentGateway paymentGateway;
@@ -121,7 +124,10 @@ public class PaymentService {
                 payment.getId(), order.getOrderReference(), payment.getAmountPaise());
 
         ledgerService.postPaymentCaptured(payment.getId(), payment.getAmountPaise(), payment.getCurrency());
-
+        auditService.record("PAYMENT_CAPTURED", "Payment", payment.getId(),
+                "Captured via checkout verification: orderRef=" + order.getOrderReference()
+                        + ", amount=" + payment.getAmountPaise() + "p", "CHECKOUT");
+        evaluateRiskSafely(payment);
         return toPaymentResponse(payment);
     }
 
@@ -163,6 +169,10 @@ public class PaymentService {
 
         payment=paymentRepository.save(payment);
         ledgerService.postPaymentCaptured(payment.getId(), payment.getAmountPaise(), payment.getCurrency());
+        auditService.record("PAYMENT_CAPTURED", "Payment", payment.getId(),
+        "Captured via checkout verification: orderRef=" + order.getOrderReference()
+                + ", amount=" + payment.getAmountPaise() + "p", "CHECKOUT");
+        evaluateRiskSafely(payment);
         if (order.canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)) {
             order.transitionTo(BusinessOrderStatus.PAYMENT_CAPTURED);
             orderRepository.save(order);
@@ -270,7 +280,13 @@ public class PaymentService {
         if (val instanceof Number n) return n.longValue();
         return 0L;
     }
-
+    private void evaluateRiskSafely(Payment payment) {
+    try {
+        riskService.evaluatePayment(payment);
+    } catch (RuntimeException e) {
+        log.error("Risk evaluation failed for payment {}: {}", payment.getId(), e.getMessage());
+    }
+    }
     private String getString(Map<String, Object> map, String key, String defaultValue) {
         Object val = map.get(key);
         return val != null ? val.toString() : defaultValue;
