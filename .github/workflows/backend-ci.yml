@@ -6,11 +6,15 @@ on:
     paths:
       - 'backend/**'
       - '.github/workflows/backend-ci.yml'
-    pull_request:
-      branches: [main]
-      paths:
-        - 'backend/**'
-        - '.github/workflows/backend-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+
+# The workflow only needs to read the repository.
+permissions:
+  contents: read
 
 jobs:
   build-and-test:
@@ -44,17 +48,11 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      # Testcontainers can use the service container OR spin its own.
-      # We pass DB details as env vars so Testcontainers uses the GHA service.
-      # Actually, for Testcontainers we let it manage its own containers.
-      # Docker is available on ubuntu-latest runners by default.
-
+      # Integration tests start their own PostgreSQL with Testcontainers
+      # (Docker is available on ubuntu-latest runners).
       - name: Build and run tests
         working-directory: backend
         env:
-          # Testcontainers will use Docker to spin up its own PostgreSQL.
-          # We do NOT point it at the service DB above — that's for future use
-          # when we add non-Testcontainers integration tests.
           RAZORPAY_KEY_ID: rzp_test_placeholder_for_ci
           RAZORPAY_KEY_SECRET: test_secret_placeholder
           RAZORPAY_WEBHOOK_SECRET: test_webhook_placeholder
@@ -68,7 +66,7 @@ jobs:
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4
-        if: always()   # Upload even if tests fail — so you can debug
+        if: always()
         with:
           name: test-reports
           path: backend/target/surefire-reports/
@@ -77,8 +75,8 @@ jobs:
       - name: Check for secret leakage in build output
         working-directory: backend
         run: |
-          # Look for something shaped like a real live Razorpay key (rzp_live_ followed by
-          # 10 or more letters/digits) in TEXT files only.
+          # Look for something shaped like a real live Razorpay key
+          # (rzp_live_ followed by 10 or more letters or digits) in TEXT files only.
           # -I skips compiled .class files, which legitimately contain the bare text
           # "rzp_live_" from our own safety guard in RazorpayConfig.
           # -l prints only file names, so a real key is never echoed into the CI log.
@@ -87,4 +85,4 @@ jobs:
             echo "::error::Possible live Razorpay key found (see file names above)"
             exit 1
           fi
-          echo "No live credentials detected."."
+          echo "No live credentials detected."
