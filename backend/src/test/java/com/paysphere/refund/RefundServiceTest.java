@@ -262,4 +262,95 @@ class RefundServiceTest {
 
         verify(ledgerService, never()).postRefund(any(), anyLong(), any());
     }
+        private Refund refundWith(Payment p, RefundStatus status, String gatewayId, long amount) {
+        return Refund.builder().id(UUID.randomUUID()).payment(p).businessOrder(p.getBusinessOrder())
+                .amountPaise(amount).currency("INR").status(status).razorpayRefundId(gatewayId)
+                .idempotencyKey("client-" + UUID.randomUUID()).build();
+    }
+
+    @Test
+    @DisplayName("refund.failed on a PENDING refund marks it FAILED and posts nothing")
+    void testFailedWebhookOnPendingRefund() {
+        Payment p = payment();
+        Refund pending = refundWith(p, RefundStatus.PENDING, null, 30000L);
+        stubPayment(p);
+        when(refundRepository.findByRazorpayRefundId("rfnd_f1")).thenReturn(Optional.empty());
+        when(refundRepository.findByPaymentId(paymentId)).thenReturn(List.of(pending));
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        refundService.handleWebhookRefundFailed("rfnd_f1", "pay_abc", 30000L);
+
+        assertThat(pending.getStatus()).isEqualTo(RefundStatus.FAILED);
+        assertThat(pending.getRazorpayRefundId()).isEqualTo("rfnd_f1");
+        verify(ledgerService, never()).postRefundReversal(any(), anyLong(), any());
+        verify(auditService).record(eq("REFUND_FAILED"), eq("Refund"), eq(pending.getId()),
+                anyString(), eq("WEBHOOK"));
+    }
+
+    @Test
+    @DisplayName("refund.failed on a PROCESSED refund reverses payment, order and ledger")
+    void testFailedWebhookReversesProcessedRefund() {
+        Payment p = payment();
+        p.setAmountRefundedPaise(30000L);
+        p.getBusinessOrder().transitionTo(BusinessOrderStatus.PARTIALLY_REFUNDED);
+        Refund processed = refundWith(p, RefundStatus.PROCESSED, "rfnd_f2", 30000L);
+        stubPayment(p);
+        when(refundRepository.findByRazorpayRefundId("rfnd_f2")).thenReturn(Optional.of(processed));
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        refundService.handleWebhookRefundFailed("rfnd_f2", "pay_abc", 30000L);
+
+        assertThat(processed.getStatus()).isEqualTo(RefundStatus.FAILED);
+        assertThat(p.getAmountRefundedPaise()).isZero();
+        assertThat(p.getBusinessOrder().getStatus()).isEqualTo(BusinessOrderStatus.PAYMENT_CAPTURED);
+        verify(ledgerService).postRefundReversal(eq(processed.getId()), eq(30000L), eq("INR"));
+    }
+
+    @Test
+    @DisplayName("reversing a full refund puts payment and order back to CAPTURED")
+    void testFailedWebhookReversesFullRefund() {
+        Payment p = payment();
+        p.setAmountRefundedPaise(100000L);
+        p.setStatus(PaymentStatus.REFUNDED);
+        p.getBusinessOrder().transitionTo(BusinessOrderStatus.REFUNDED);
+        Refund processed = refundWith(p, RefundStatus.PROCESSED, "rfnd_f3", 100000L);
+        stubPayment(p);
+        when(refundRepository.findByRazorpayRefundId("rfnd_f3")).thenReturn(Optional.of(processed));
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        refundService.handleWebhookRefundFailed("rfnd_f3", "pay_abc", 100000L);
+
+        assertThat(p.getStatus()).isEqualTo(PaymentStatus.CAPTURED);
+        assertThat(p.getAmountRefundedPaise()).isZero();
+        assertThat(p.getBusinessOrder().getStatus()).isEqualTo(BusinessOrderStatus.PAYMENT_CAPTURED);
+    }
+
+    @Test
+    @DisplayName("refund.failed for an already FAILED refund changes nothing")
+    void testFailedWebhookIsIdempotent() {
+        Payment p = payment();
+        Refund failed = refundWith(p, RefundStatus.FAILED, "rfnd_f4", 30000L);
+        stubPayment(p);
+        when(refundRepository.findByRazorpayRefundId("rfnd_f4")).thenReturn(Optional.of(failed));
+
+        refundService.handleWebhookRefundFailed("rfnd_f4", "pay_abc", 30000L);
+
+        verify(refundRepository, never()).save(any());
+        verify(ledgerService, never()).postRefundReversal(any(), anyLong(), any());
+        verify(auditService, never()).record(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("refund.failed for a refund we never recorded is ignored without an error")
+    void testFailedWebhookForUnknownRefundIsIgnored() {
+        Payment p = payment();
+        stubPayment(p);
+        when(refundRepository.findByRazorpayRefundId("rfnd_x")).thenReturn(Optional.empty());
+        when(refundRepository.findByPaymentId(paymentId)).thenReturn(List.of());
+
+        refundService.handleWebhookRefundFailed("rfnd_x", "pay_abc", 1000L);
+
+        verify(refundRepository, never()).save(any());
+        verify(ledgerService, never()).postRefundReversal(any(), anyLong(), any());
+    }
 }

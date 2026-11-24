@@ -129,6 +129,7 @@ public class WebhookService {
             case "payment.failed"   -> handlePaymentFailed(payload);
             case "refund.created"   -> handleRefundCreated(payload);
             case "refund.processed" -> handleRefundProcessed(payload);
+            case "refund.failed"    -> handleRefundFailed(payload);
             default -> log.info("Webhook: unhandled event type '{}' — logged and skipped", eventType);
         }
     }
@@ -176,7 +177,7 @@ public class WebhookService {
         log.info("Webhook refund.created received — processing logged for M6 implementation");
     }
 
-        private void handleRefundProcessed(JSONObject payload) {
+    private void handleRefundProcessed(JSONObject payload) {
         JSONObject refund = entityOf(payload, "refund");
         if (refund == null) {
             log.warn("refund.processed webhook missing refund entity");
@@ -192,7 +193,22 @@ public class WebhookService {
         log.info("Webhook refund.processed: refundId={}, paymentId={}, amount={}p", refundId, paymentId, amount);
         refundService.handleWebhookRefundProcessed(refundId, paymentId, amount);
     }
-
+    private void handleRefundFailed(JSONObject payload) {
+        JSONObject refund = entityOf(payload, "refund");
+        if (refund == null) {
+            log.warn("refund.failed webhook missing refund entity");
+            return;
+        }
+        String refundId = refund.optString("id");
+        String paymentId = refund.optString("payment_id");
+        long amount = refund.optLong("amount", 0L);
+        if (refundId.isBlank() || paymentId.isBlank() || amount <= 0) {
+            log.warn("refund.failed webhook has missing or invalid fields");
+            return;
+        }
+        log.warn("Webhook refund.failed: refundId={}, paymentId={}, amount={}p", refundId, paymentId, amount);
+        refundService.handleWebhookRefundFailed(refundId, paymentId, amount);
+    }
     private JSONObject entityOf(JSONObject payload, String kind) {
         JSONObject outer = payload.optJSONObject("payload");
         JSONObject wrapper = outer == null ? null : outer.optJSONObject(kind);
