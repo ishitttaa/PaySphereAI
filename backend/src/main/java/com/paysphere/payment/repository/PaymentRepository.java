@@ -29,6 +29,9 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
 
     Page<Payment> findByStatusOrderByCreatedAtDesc(PaymentStatus status, Pageable pageable);
 
+    @Query("select p.id from Payment p where p.razorpayPaymentId = :razorpayPaymentId")
+    Optional<UUID> findIdByRazorpayPaymentId(@Param("razorpayPaymentId") String razorpayPaymentId);
+
     long countByStatus(PaymentStatus status);
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from Payment p where p.id = :id")

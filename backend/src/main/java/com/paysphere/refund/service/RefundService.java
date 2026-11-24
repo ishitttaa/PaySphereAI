@@ -21,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Comparator;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -145,7 +146,65 @@ public class RefundService {
 
         return toRefundResponse(refund);
     }
+        /**
+     * Handles a "refund.processed" webhook. Safe to receive twice, and safe to race with createRefund.
+     * Throws when the refund cannot be applied, so the webhook is recorded FAILED and retried.
+     */
+    @Transactional
+    public void handleWebhookRefundProcessed(String razorpayRefundId, String razorpayPaymentId, long amountPaise) {
+        UUID paymentId = paymentRepository.findIdByRazorpayPaymentId(razorpayPaymentId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Refund webhook for a payment not recorded yet: " + razorpayPaymentId));
 
+        // Lock the payment row FIRST, then read refund state, so we never act on stale data.
+        Payment payment = paymentRepository.findByIdForUpdate(paymentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment", paymentId));
+
+        Refund known = refundRepository.findByRazorpayRefundId(razorpayRefundId).orElse(null);
+        if (known != null && known.getStatus() == RefundStatus.PROCESSED) {
+            log.info("Refund webhook already applied, skipping: {}", razorpayRefundId);
+            return;
+        }
+        if (known != null && !known.getAmountPaise().equals(amountPaise)) {
+            throw new BusinessException("REFUND_AMOUNT_MISMATCH",
+                    "Refund " + razorpayRefundId + " amount differs from our record");
+        }
+
+        long remaining = payment.getAmountPaise() - payment.getAmountRefundedPaise();
+        if (payment.getStatus() != PaymentStatus.CAPTURED || amountPaise > remaining) {
+            throw new BusinessException("REFUND_NOT_APPLICABLE",
+                    "Refund " + razorpayRefundId + " of " + amountPaise + "p cannot be applied: payment status "
+                            + payment.getStatus() + ", remaining balance " + remaining + "p");
+        }
+
+        Refund target = known;
+        if (target == null) {
+            // A refund that timed out on our side stays PENDING without a gateway id.
+            // Match it by amount, oldest first.
+            target = refundRepository.findByPaymentId(paymentId).stream()
+                    .filter(r -> r.getStatus() == RefundStatus.PENDING
+                            && r.getRazorpayRefundId() == null
+                            && r.getAmountPaise() == amountPaise)
+                    .min(Comparator.comparing(Refund::getCreatedAt,
+                            Comparator.nullsLast(Comparator.naturalOrder())))
+                    .orElse(null);
+        }
+        if (target == null) {
+            // A refund made outside PaySphere (for example from the gateway dashboard).
+            // The money has left, so our books must show it.
+            target = Refund.builder()
+                    .payment(payment)
+                    .businessOrder(payment.getBusinessOrder())
+                    .amountPaise(amountPaise)
+                    .currency(payment.getCurrency())
+                    .status(RefundStatus.PENDING)
+                    .reason("Refund created outside PaySphere")
+                    .idempotencyKey("webhook-" + razorpayRefundId)
+                    .build();
+        }
+
+        applyProcessedRefund(target, payment, razorpayRefundId, "WEBHOOK");
+    }
     /**
      * Applies a refund the gateway has CONFIRMED: marks it PROCESSED, updates the payment's
      * refunded total and the order status, writes the audit entry and posts the ledger entry.

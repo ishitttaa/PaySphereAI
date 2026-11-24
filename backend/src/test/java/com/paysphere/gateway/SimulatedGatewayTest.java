@@ -62,4 +62,10 @@ class SimulatedGatewayTest {
         assertThatThrownBy(() -> new SimulatedGateway("production"))
                 .isInstanceOf(IllegalStateException.class);
     }
+    @Test
+    void signedWebhookIsAcceptedAndTamperedOneIsNot() {
+        String body = "{\"event\":\"refund.processed\"}";
+        assertThat(gateway.verifyWebhookSignature(body, gateway.signWebhook(body))).isTrue();
+        assertThat(gateway.verifyWebhookSignature(body + " ", gateway.signWebhook(body))).isFalse();
+    }
 }

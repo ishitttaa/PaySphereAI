@@ -22,6 +22,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import java.util.List;
+import org.mockito.ArgumentCaptor;
 
 import java.util.Map;
 import java.util.Optional;
@@ -178,5 +180,86 @@ class RefundServiceTest {
         assertThat(p.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
         assertThat(p.getBusinessOrder().getStatus()).isEqualTo(BusinessOrderStatus.REFUNDED);
         verify(ledgerService).postRefund(eq(pending.getId()), eq(100000L), eq("INR"));
+    }
+        private void stubPayment(Payment p) {
+        when(paymentRepository.findIdByRazorpayPaymentId("pay_abc")).thenReturn(Optional.of(paymentId));
+        when(paymentRepository.findByIdForUpdate(paymentId)).thenReturn(Optional.of(p));
+    }
+
+    @Test
+    @DisplayName("webhook completes a PENDING refund that timed out on our side")
+    void testWebhookCompletesPendingRefund() {
+        Payment p = payment();
+        Refund pending = Refund.builder().id(UUID.randomUUID()).payment(p)
+                .businessOrder(p.getBusinessOrder()).amountPaise(30000L).currency("INR")
+                .status(RefundStatus.PENDING).idempotencyKey("client-timeout-key").build();
+        stubPayment(p);
+        when(refundRepository.findByRazorpayRefundId("rfnd_9")).thenReturn(Optional.empty());
+        when(refundRepository.findByPaymentId(paymentId)).thenReturn(List.of(pending));
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        refundService.handleWebhookRefundProcessed("rfnd_9", "pay_abc", 30000L);
+
+        assertThat(pending.getStatus()).isEqualTo(RefundStatus.PROCESSED);
+        assertThat(pending.getRazorpayRefundId()).isEqualTo("rfnd_9");
+        assertThat(p.getAmountRefundedPaise()).isEqualTo(30000L);
+        verify(ledgerService).postRefund(eq(pending.getId()), eq(30000L), eq("INR"));
+    }
+
+    @Test
+    @DisplayName("a webhook for an already processed refund changes nothing")
+    void testWebhookIsIdempotent() {
+        Payment p = payment();
+        Refund done = Refund.builder().id(UUID.randomUUID()).payment(p).amountPaise(30000L)
+                .status(RefundStatus.PROCESSED).razorpayRefundId("rfnd_9").build();
+        stubPayment(p);
+        when(refundRepository.findByRazorpayRefundId("rfnd_9")).thenReturn(Optional.of(done));
+
+        refundService.handleWebhookRefundProcessed("rfnd_9", "pay_abc", 30000L);
+
+        verify(ledgerService, never()).postRefund(any(), anyLong(), any());
+        verify(refundRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("a webhook for a payment we have not recorded throws, so it is retried")
+    void testWebhookForUnknownPaymentThrows() {
+        when(paymentRepository.findIdByRazorpayPaymentId("pay_missing")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> refundService.handleWebhookRefundProcessed("rfnd_1", "pay_missing", 100L))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("a refund made outside PaySphere is recorded and posted to the ledger")
+    void testWebhookRecordsExternalRefund() {
+        Payment p = payment();
+        stubPayment(p);
+        when(refundRepository.findByRazorpayRefundId("rfnd_dash")).thenReturn(Optional.empty());
+        when(refundRepository.findByPaymentId(paymentId)).thenReturn(List.of());
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        refundService.handleWebhookRefundProcessed("rfnd_dash", "pay_abc", 25000L);
+
+        ArgumentCaptor<Refund> saved = ArgumentCaptor.forClass(Refund.class);
+        verify(refundRepository, atLeastOnce()).save(saved.capture());
+        Refund last = saved.getValue();
+        assertThat(last.getStatus()).isEqualTo(RefundStatus.PROCESSED);
+        assertThat(last.getIdempotencyKey()).isEqualTo("webhook-rfnd_dash");
+        assertThat(p.getAmountRefundedPaise()).isEqualTo(25000L);
+        verify(ledgerService).postRefund(any(), eq(25000L), eq("INR"));
+    }
+
+    @Test
+    @DisplayName("a webhook refund larger than the remaining balance is rejected")
+    void testWebhookRefundLargerThanBalanceIsRejected() {
+        Payment p = payment();
+        stubPayment(p);
+        when(refundRepository.findByRazorpayRefundId("rfnd_big")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> refundService.handleWebhookRefundProcessed("rfnd_big", "pay_abc", 150000L))
+                .isInstanceOf(BusinessException.class);
+
+        verify(ledgerService, never()).postRefund(any(), anyLong(), any());
     }
 }
