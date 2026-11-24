@@ -144,4 +144,39 @@ class RefundServiceTest {
         verify(refundRepository, never()).save(any());
         verify(paymentGateway, never()).createRefund(any(), anyLong(), any(), any());
     }
+        @Test
+    @DisplayName("applyProcessedRefund completes a PENDING refund: totals, order status, ledger, audit")
+    void testApplyProcessedRefundPartial() {
+        Payment p = payment();
+        Refund pending = Refund.builder().id(UUID.randomUUID()).payment(p)
+                .businessOrder(p.getBusinessOrder()).amountPaise(30000L).currency("INR")
+                .status(RefundStatus.PENDING).build();
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        Refund result = refundService.applyProcessedRefund(pending, p, "rfnd_late_1", "WEBHOOK");
+
+        assertThat(result.getStatus()).isEqualTo(RefundStatus.PROCESSED);
+        assertThat(result.getRazorpayRefundId()).isEqualTo("rfnd_late_1");
+        assertThat(p.getAmountRefundedPaise()).isEqualTo(30000L);
+        assertThat(p.getBusinessOrder().getStatus()).isEqualTo(BusinessOrderStatus.PARTIALLY_REFUNDED);
+        verify(ledgerService).postRefund(eq(pending.getId()), eq(30000L), eq("INR"));
+        verify(auditService).record(eq("REFUND_PROCESSED"), eq("Refund"), eq(pending.getId()),
+                anyString(), eq("WEBHOOK"));
+    }
+
+    @Test
+    @DisplayName("applyProcessedRefund for the full amount marks payment and order REFUNDED")
+    void testApplyProcessedRefundFull() {
+        Payment p = payment();
+        Refund pending = Refund.builder().id(UUID.randomUUID()).payment(p)
+                .businessOrder(p.getBusinessOrder()).amountPaise(100000L).currency("INR")
+                .status(RefundStatus.PENDING).build();
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        refundService.applyProcessedRefund(pending, p, "rfnd_full_1", "WEBHOOK");
+
+        assertThat(p.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+        assertThat(p.getBusinessOrder().getStatus()).isEqualTo(BusinessOrderStatus.REFUNDED);
+        verify(ledgerService).postRefund(eq(pending.getId()), eq(100000L), eq("INR"));
+    }
 }
