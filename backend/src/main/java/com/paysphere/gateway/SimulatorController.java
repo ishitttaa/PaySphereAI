@@ -43,14 +43,16 @@ public class SimulatorController {
         public record WebhookRequest(@NotBlank String eventType, String eventId,
                                  String refundId, String paymentId, Long amountPaise) {}
 
-    /** Sends a correctly signed webhook to our own webhook handler. Currently: refund.processed. */
+        /** Sends a correctly signed webhook to our own webhook handler: refund.processed or refund.failed. */
     @PostMapping("/webhook")
     public ResponseEntity<ApiResponse<Map<String, Object>>> webhook(@Valid @RequestBody WebhookRequest request) {
-        if (!"refund.processed".equals(request.eventType())
-                || request.refundId() == null || request.paymentId() == null
+        boolean supported = "refund.processed".equals(request.eventType())
+                || "refund.failed".equals(request.eventType());
+        if (!supported || request.refundId() == null || request.paymentId() == null
                 || request.amountPaise() == null || request.amountPaise() <= 0) {
             return ResponseEntity.badRequest().body(ApiResponse.failure(
-                    "Simulator supports eventType=refund.processed with refundId, paymentId and amountPaise"));
+                    "Simulator supports eventType refund.processed or refund.failed, "
+                            + "with refundId, paymentId and amountPaise"));
         }
         String eventId = request.eventId() != null ? request.eventId()
                 : "evt_sim_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
@@ -60,7 +62,7 @@ public class SimulatorController {
                 .put("payment_id", request.paymentId())
                 .put("amount", request.amountPaise())
                 .put("currency", "INR")
-                .put("status", "processed");
+                .put("status", "refund.failed".equals(request.eventType()) ? "failed" : "processed");
         JSONObject body = new JSONObject()
                 .put("entity", "event")
                 .put("event", request.eventType())

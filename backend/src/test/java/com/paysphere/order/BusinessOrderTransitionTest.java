@@ -31,4 +31,19 @@ class BusinessOrderTransitionTest {
         assertThat(order(BusinessOrderStatus.PAYMENT_CAPTURED)
                 .canTransitionTo(BusinessOrderStatus.PAYMENT_EXPIRED)).isFalse();
     }
+    @Test
+    void refundedOrdersCanBeWoundBackIfARefundFailsAtTheGateway() {
+        assertThat(order(BusinessOrderStatus.REFUNDED)
+                .canTransitionTo(BusinessOrderStatus.PARTIALLY_REFUNDED)).isTrue();
+        assertThat(order(BusinessOrderStatus.REFUNDED)
+                .canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)).isTrue();
+        assertThat(order(BusinessOrderStatus.PARTIALLY_REFUNDED)
+                .canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)).isTrue();
+    }
+
+    @Test
+    void failedOrdersStayFailed() {
+        assertThat(order(BusinessOrderStatus.PAYMENT_FAILED)
+                .canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)).isFalse();
+    }
 }

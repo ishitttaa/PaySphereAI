@@ -163,4 +163,17 @@ class WebhookServiceTest {
 
         verify(refundService, never()).handleWebhookRefundProcessed(any(), any(), anyLong());
     }
+    @Test
+    @DisplayName("refund.failed webhook is routed to RefundService")
+    void testRefundFailedIsRouted() {
+        String payload = "{\"id\":\"evt_f1\",\"event\":\"refund.failed\",\"payload\":{\"refund\":{\"entity\":"
+                + "{\"id\":\"rfnd_9\",\"payment_id\":\"pay_9\",\"amount\":30000,\"status\":\"failed\"}}}}";
+        when(paymentGateway.verifyWebhookSignature(payload, "sig")).thenReturn(true);
+        when(webhookEventRepository.existsByRazorpayEventId("evt_f1")).thenReturn(false);
+        when(webhookEventRepository.save(any(WebhookEvent.class))).thenAnswer(i -> i.getArgument(0));
+
+        webhookService.processWebhook(payload, "sig");
+
+        verify(refundService).handleWebhookRefundFailed("rfnd_9", "pay_9", 30000L);
+    }
 }

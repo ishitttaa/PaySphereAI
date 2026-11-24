@@ -117,4 +117,39 @@ class LedgerServiceTest {
         assertThat(debits).isEqualTo(credits);
         assertThat(debits).isEqualTo(10000L);
     }
+    @Test
+    @DisplayName("postRefundReversal posts the opposite of a refund: debit receivable, credit revenue")
+    void testPostRefundReversal() {
+        UUID refundId = UUID.randomUUID();
+        when(txRepo.existsByIdempotencyKey("REFUND-REVERSAL-" + refundId)).thenReturn(false);
+        when(accountRepo.findByCode("RAZORPAY_RECEIVABLE")).thenReturn(Optional.of(receivable));
+        when(accountRepo.findByCode("REVENUE")).thenReturn(Optional.of(revenue));
+
+        ledgerService.postRefundReversal(refundId, 5000L, "INR");
+
+        ArgumentCaptor<LedgerTransaction> captor = ArgumentCaptor.forClass(LedgerTransaction.class);
+        verify(txRepo).save(captor.capture());
+        LedgerTransaction tx = captor.getValue();
+        assertThat(tx.getSourceType()).isEqualTo("ADJUSTMENT");
+        assertThat(tx.getEntries()).hasSize(2);
+        assertThat(tx.getEntries()).anySatisfy(e -> {
+            assertThat(e.getLedgerAccount().getCode()).isEqualTo("RAZORPAY_RECEIVABLE");
+            assertThat(e.getEntryType()).isEqualTo(com.paysphere.ledger.entity.LedgerEntry.EntryType.DEBIT);
+        });
+        assertThat(tx.getEntries()).anySatisfy(e -> {
+            assertThat(e.getLedgerAccount().getCode()).isEqualTo("REVENUE");
+            assertThat(e.getEntryType()).isEqualTo(com.paysphere.ledger.entity.LedgerEntry.EntryType.CREDIT);
+        });
+    }
+
+    @Test
+    @DisplayName("postRefundReversal is idempotent")
+    void testPostRefundReversalIdempotent() {
+        UUID refundId = UUID.randomUUID();
+        when(txRepo.existsByIdempotencyKey("REFUND-REVERSAL-" + refundId)).thenReturn(true);
+
+        ledgerService.postRefundReversal(refundId, 5000L, "INR");
+
+        verify(txRepo, never()).save(any());
+    }
 }

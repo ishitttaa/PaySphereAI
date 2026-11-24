@@ -123,6 +123,49 @@ public class LedgerService {
 
         log.info("Ledger: posted refund: refundId={}, amount={}p", refundId, amountPaise);
     }
+        /**
+     * Reverses a refund that was already posted, after the gateway reports the refund FAILED.
+     * The original entries are never touched; this is a new, opposite posting:
+     *   DR RAZORPAY_RECEIVABLE   (we are owed the money again)
+     *   CR REVENUE               (the revenue we had reversed is restored)
+     */
+    @Transactional
+    public void postRefundReversal(UUID refundId, long amountPaise, String currency) {
+        if (amountPaise <= 0) {
+            throw new IllegalArgumentException("Amount must be positive");
+        }
+        String idempotencyKey = "REFUND-REVERSAL-" + refundId;
+        if (txRepo.existsByIdempotencyKey(idempotencyKey)) {
+            log.info("Ledger: refund reversal already posted, skipping: {}", refundId);
+            return;
+        }
+
+        LedgerAccount receivable = getAccount("RAZORPAY_RECEIVABLE");
+        LedgerAccount revenue    = getAccount("REVENUE");
+
+        LedgerTransaction tx = LedgerTransaction.builder()
+                .sourceType("ADJUSTMENT")
+                .sourceId(refundId)
+                .description("Refund reversed after gateway failure: " + refundId)
+                .idempotencyKey(idempotencyKey)
+                .amountPaise(amountPaise)
+                .currency(currency)
+                .postedAt(Instant.now())
+                .build();
+
+        List<LedgerEntry> entries = List.of(
+            buildEntry(tx, receivable, EntryType.DEBIT,  amountPaise, currency,
+                       "Receivable restored: refund " + refundId + " failed"),
+            buildEntry(tx, revenue,    EntryType.CREDIT, amountPaise, currency,
+                       "Revenue restored: refund " + refundId + " failed")
+        );
+
+        validateBalance(entries);
+        tx.getEntries().addAll(entries);
+        txRepo.save(tx);
+
+        log.info("Ledger: posted refund reversal: refundId={}, amount={}p", refundId, amountPaise);
+    }
 
     /**
      * Post ledger entries for a Razorpay settlement.

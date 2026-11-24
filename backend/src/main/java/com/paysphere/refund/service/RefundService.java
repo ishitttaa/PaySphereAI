@@ -205,6 +205,82 @@ public class RefundService {
 
         applyProcessedRefund(target, payment, razorpayRefundId, "WEBHOOK");
     }
+        /**
+     * Handles a "refund.failed" webhook (the gateway could not process a refund).
+     *  - PENDING refund: mark it FAILED (nothing was posted, so nothing to undo).
+     *  - PROCESSED refund (already in the ledger): undo it with a REVERSING ledger entry and
+     *    restore the payment and the order. Ledger rows are never edited.
+     *  - A refund we never recorded: nothing of ours to undo.
+     */
+    @Transactional
+    public void handleWebhookRefundFailed(String razorpayRefundId, String razorpayPaymentId, long amountPaise) {
+        UUID paymentId = paymentRepository.findIdByRazorpayPaymentId(razorpayPaymentId).orElse(null);
+        if (paymentId == null) {
+            log.warn("refund.failed for a payment we never recorded: {}", razorpayPaymentId);
+            return;
+        }
+
+        // Lock the payment row FIRST, then read refund state.
+        Payment payment = paymentRepository.findByIdForUpdate(paymentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment", paymentId));
+
+        Refund refund = refundRepository.findByRazorpayRefundId(razorpayRefundId).orElse(null);
+        if (refund == null) {
+            refund = refundRepository.findByPaymentId(paymentId).stream()
+                    .filter(r -> r.getStatus() == RefundStatus.PENDING
+                            && r.getRazorpayRefundId() == null
+                            && r.getAmountPaise() == amountPaise)
+                    .min(Comparator.comparing(Refund::getCreatedAt,
+                            Comparator.nullsLast(Comparator.naturalOrder())))
+                    .orElse(null);
+        }
+        if (refund == null) {
+            log.info("refund.failed for a refund we never recorded, nothing to undo: {}", razorpayRefundId);
+            return;
+        }
+        if (refund.getStatus() == RefundStatus.FAILED) {
+            log.info("refund.failed already applied, skipping: {}", razorpayRefundId);
+            return;
+        }
+
+        if (refund.getStatus() == RefundStatus.PROCESSED) {
+            reverseProcessedRefund(refund, payment);
+        } else {
+            if (refund.getRazorpayRefundId() == null) {
+                refund.setRazorpayRefundId(razorpayRefundId);
+            }
+            refund.setStatus(RefundStatus.FAILED);
+            refundRepository.save(refund);
+        }
+
+        auditService.record("REFUND_FAILED", "Refund", refund.getId(),
+                "Gateway reported refund " + razorpayRefundId + " failed (" + amountPaise + "p)", "WEBHOOK");
+    }
+
+    /** Undoes a refund we had already booked: payment total, statuses, and a reversing ledger entry. */
+    private void reverseProcessedRefund(Refund refund, Payment payment) {
+        long newTotal = Math.max(0L, payment.getAmountRefundedPaise() - refund.getAmountPaise());
+        payment.setAmountRefundedPaise(newTotal);
+        if (payment.getStatus() == PaymentStatus.REFUNDED) {
+            payment.setStatus(PaymentStatus.CAPTURED);
+        }
+
+        BusinessOrder order = payment.getBusinessOrder();
+        BusinessOrderStatus target = newTotal == 0
+                ? BusinessOrderStatus.PAYMENT_CAPTURED : BusinessOrderStatus.PARTIALLY_REFUNDED;
+        if (order.getStatus() != target && order.canTransitionTo(target)) {
+            order.transitionTo(target);
+            orderRepository.save(order);
+        }
+        paymentRepository.save(payment);
+
+        refund.setStatus(RefundStatus.FAILED);
+        refundRepository.save(refund);
+        ledgerService.postRefundReversal(refund.getId(), refund.getAmountPaise(), refund.getCurrency());
+
+        log.warn("Refund {} failed at the gateway after being booked: reversed in payment, order and ledger",
+                refund.getId());
+    }
     /**
      * Applies a refund the gateway has CONFIRMED: marks it PROCESSED, updates the payment's
      * refunded total and the order status, writes the audit entry and posts the ledger entry.

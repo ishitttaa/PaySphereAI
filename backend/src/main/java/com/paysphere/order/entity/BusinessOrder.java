@@ -104,7 +104,10 @@ public class BusinessOrder {
                                    || targetStatus == BusinessOrderStatus.PAYMENT_EXPIRED;
             case PAYMENT_CAPTURED -> targetStatus == BusinessOrderStatus.REFUNDED
                                   || targetStatus == BusinessOrderStatus.PARTIALLY_REFUNDED;
-            case PARTIALLY_REFUNDED -> targetStatus == BusinessOrderStatus.REFUNDED;
+            case PARTIALLY_REFUNDED -> targetStatus == BusinessOrderStatus.REFUNDED
+                                    || targetStatus == BusinessOrderStatus.PAYMENT_CAPTURED;  // wound back if a refund FAILED
+            case REFUNDED -> targetStatus == BusinessOrderStatus.PARTIALLY_REFUNDED
+                          || targetStatus == BusinessOrderStatus.PAYMENT_CAPTURED;            // wound back if a refund FAILED
             case PAYMENT_EXPIRED -> targetStatus == BusinessOrderStatus.PAYMENT_CAPTURED;  // a late payment must never be lost
             default -> false;  // Terminal states: REFUNDED, PAYMENT_FAILED, PAYMENT_EXPIRED
         };
