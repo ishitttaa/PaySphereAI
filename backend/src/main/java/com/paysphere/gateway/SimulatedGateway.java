@@ -135,7 +135,10 @@ public class SimulatedGateway implements PaymentGateway {
         }
         return Optional.of(result);
     }
-
+    /** Simulator-only: signs a webhook body the way the real gateway would. */
+    public String signWebhook(String payload) {
+        return hmacHex(webhookSecret, payload);
+    }
     // ── helpers ──
 
     private String randomId(int length) {

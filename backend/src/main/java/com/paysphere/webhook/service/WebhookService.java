@@ -1,5 +1,6 @@
 package com.paysphere.webhook.service;
 
+import com.paysphere.refund.service.RefundService;
 import com.paysphere.gateway.PaymentGateway;
 import com.paysphere.payment.service.PaymentService;
 import com.paysphere.webhook.entity.WebhookEvent;
@@ -50,7 +51,7 @@ public class WebhookService {
     private final WebhookEventRepository webhookEventRepository;
     private final PaymentGateway paymentGateway;
     private final PaymentService paymentService;
-
+    private final RefundService refundService;
     /**
      * Main entry point: receive and process a Razorpay webhook.
      *
@@ -175,10 +176,29 @@ public class WebhookService {
         log.info("Webhook refund.created received — processing logged for M6 implementation");
     }
 
-    private void handleRefundProcessed(JSONObject payload) {
-        log.info("Webhook refund.processed received");
+        private void handleRefundProcessed(JSONObject payload) {
+        JSONObject refund = entityOf(payload, "refund");
+        if (refund == null) {
+            log.warn("refund.processed webhook missing refund entity");
+            return;
+        }
+        String refundId = refund.optString("id");
+        String paymentId = refund.optString("payment_id");
+        long amount = refund.optLong("amount", 0L);
+        if (refundId.isBlank() || paymentId.isBlank() || amount <= 0) {
+            log.warn("refund.processed webhook has missing or invalid fields");
+            return;
+        }
+        log.info("Webhook refund.processed: refundId={}, paymentId={}, amount={}p", refundId, paymentId, amount);
+        refundService.handleWebhookRefundProcessed(refundId, paymentId, amount);
     }
 
+    private JSONObject entityOf(JSONObject payload, String kind) {
+        JSONObject outer = payload.optJSONObject("payload");
+        JSONObject wrapper = outer == null ? null : outer.optJSONObject(kind);
+        return wrapper == null ? null : wrapper.optJSONObject("entity");
+    }
+    
     private Map<String, Object> jsonToMap(JSONObject json) {
         Map<String, Object> map = new HashMap<>();
         for (String key : json.keySet()) {

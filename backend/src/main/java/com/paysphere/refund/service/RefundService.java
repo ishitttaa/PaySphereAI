@@ -1,8 +1,10 @@
 package com.paysphere.refund.service;
-import com.paysphere.ledger.service.LedgerService;
+
+import com.paysphere.audit.service.AuditService;
 import com.paysphere.common.exception.BusinessException;
 import com.paysphere.common.exception.ResourceNotFoundException;
 import com.paysphere.gateway.PaymentGateway;
+import com.paysphere.ledger.service.LedgerService;
 import com.paysphere.order.entity.BusinessOrder;
 import com.paysphere.order.entity.BusinessOrderStatus;
 import com.paysphere.order.repository.BusinessOrderRepository;
@@ -18,8 +20,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import com.paysphere.audit.service.AuditService;
 
+import java.util.Comparator;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -27,14 +29,14 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * RefundService — Orchestrates the refund creation and lifecycle.
+ * RefundService: creates refunds and applies their outcome.
  *
- * Business rules enforced:
- * 1. Only CAPTURED payments can be refunded
- * 2. Refund amount cannot exceed remaining balance (captured - already_refunded)
- * 3. Idempotency: duplicate refund requests return the existing refund
- * 4. Partial refunds update the order to PARTIALLY_REFUNDED
- * 5. Full refunds update the order to REFUNDED
+ * Rules enforced:
+ * 1. Only CAPTURED payments can be refunded.
+ * 2. Refund amount cannot exceed the remaining balance.
+ * 3. The same Idempotency-Key returns the earlier refund instead of refunding twice.
+ * 4. The payment row is locked, so two refunds on one payment never run together.
+ * 5. If the outcome is uncertain (timeout, network error) the refund stays PENDING.
  */
 @Slf4j
 @Service
@@ -47,18 +49,8 @@ public class RefundService {
     private final PaymentGateway paymentGateway;
     private final LedgerService ledgerService;
     private final AuditService auditService;
-    /**
-     * Initiate a refund for a captured payment.
-     *
-     * Flow:
-     * 1. Validate payment is CAPTURED
-     * 2. Validate refund amount doesn't exceed remaining balance
-     * 3. Create refund record in DB (PENDING)
-     * 4. Call Razorpay refund API
-     * 5. Update refund status and payment's amountRefundedPaise
-     * 6. Transition order status
-     */
-        @Transactional
+
+    @Transactional
     public RefundResponse createRefund(CreateRefundRequest request) {
         return createRefund(request, null);
     }
@@ -81,8 +73,7 @@ public class RefundService {
             idempotencyKey = "server-" + UUID.randomUUID();
         }
 
-        // Step 1: Load the payment and LOCK its row, so two refund requests
-        // for the same payment run one after the other, never together.
+        // Step 1: Load the payment and LOCK its row.
         Payment payment = paymentRepository.findByIdForUpdate(request.paymentId())
                 .orElseThrow(() -> new ResourceNotFoundException("Payment", request.paymentId()));
 
@@ -113,7 +104,7 @@ public class RefundService {
                             refundAmount, remainingBalance));
         }
 
-        // Step 3: Save the refund as PENDING before calling Razorpay.
+        // Step 3: Save the refund as PENDING before calling the gateway.
         BusinessOrder order = payment.getBusinessOrder();
         Refund refund = Refund.builder()
                 .payment(payment)
@@ -127,67 +118,140 @@ public class RefundService {
                 .build();
         refund = refundRepository.save(refund);
 
-        // Step 4: Call Razorpay. Only the network call sits inside this try.
+        // Step 4: Call the gateway. Only the network call sits inside this try.
         Map<String, Object> razorpayRefund = null;
         try {
             razorpayRefund = paymentGateway.createRefund(
                     payment.getRazorpayPaymentId(), refundAmount, request.reason(), idempotencyKey);
         } catch (Exception e) {
             if (isDefinitiveFailure(e)) {
-                log.error("Refund rejected by Razorpay: refundId={}, error={}", refund.getId(), e.getMessage());
+                log.error("Refund rejected by gateway: refundId={}, error={}", refund.getId(), e.getMessage());
                 refund.setStatus(RefundStatus.FAILED);
             } else {
-                // Timeout or network error: Razorpay may or may not have refunded.
+                // Timeout or network error: the gateway may or may not have refunded.
                 // Do NOT mark FAILED. Leave PENDING for the webhook / reconciliation.
                 log.error("Refund outcome UNKNOWN, left PENDING: refundId={}, error={}",
                         refund.getId(), e.getMessage());
             }
         }
 
-        // Step 5: Razorpay accepted it: update refund, payment and order.
+        // Step 5: Apply the outcome.
         if (razorpayRefund != null) {
-            refund.setRazorpayRefundId((String) razorpayRefund.get("id"));
-            refund.setStatus(RefundStatus.PROCESSED);
-            refund.setProcessedAt(Instant.now());
-
-            long newTotalRefunded = alreadyRefunded + refundAmount;
-            payment.setAmountRefundedPaise(newTotalRefunded);
-            if (newTotalRefunded >= payment.getAmountPaise()) {
-                payment.setStatus(PaymentStatus.REFUNDED);
-                if (order.canTransitionTo(BusinessOrderStatus.REFUNDED)) {
-                    order.transitionTo(BusinessOrderStatus.REFUNDED);
-                    orderRepository.save(order);
-                }
-            } else if (order.canTransitionTo(BusinessOrderStatus.PARTIALLY_REFUNDED)) {
-                order.transitionTo(BusinessOrderStatus.PARTIALLY_REFUNDED);
-                orderRepository.save(order);
-            }
-            paymentRepository.save(payment);
-
-            log.info("Refund processed: refundId={}, razorpayRefundId={}, amount={}p",
-                    refund.getId(), refund.getRazorpayRefundId(), refundAmount);
-        }
-
-        refund = refundRepository.save(refund);
-        
-        auditService.record("REFUND_" + refund.getStatus(), "Refund", refund.getId(),
-                "Refund of " + refund.getAmountPaise() + "p on payment " + payment.getId(), "API");
-        
-        // Step 6: Ledger entry only once the money has really been refunded.
-        if (refund.getStatus() == RefundStatus.PROCESSED) {
-            ledgerService.postRefund(refund.getId(), refund.getAmountPaise(), refund.getCurrency());
+            refund = applyProcessedRefund(refund, payment, (String) razorpayRefund.get("id"), "API");
+        } else {
+            refund = refundRepository.save(refund);
+            auditService.record("REFUND_" + refund.getStatus(), "Refund", refund.getId(),
+                    "Refund of " + refund.getAmountPaise() + "p on payment " + payment.getId(), "API");
         }
 
         return toRefundResponse(refund);
     }
+        /**
+     * Handles a "refund.processed" webhook. Safe to receive twice, and safe to race with createRefund.
+     * Throws when the refund cannot be applied, so the webhook is recorded FAILED and retried.
+     */
+    @Transactional
+    public void handleWebhookRefundProcessed(String razorpayRefundId, String razorpayPaymentId, long amountPaise) {
+        UUID paymentId = paymentRepository.findIdByRazorpayPaymentId(razorpayPaymentId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Refund webhook for a payment not recorded yet: " + razorpayPaymentId));
 
-    /** A clear 4xx from Razorpay means nothing was refunded. Anything else is uncertain. */
+        // Lock the payment row FIRST, then read refund state, so we never act on stale data.
+        Payment payment = paymentRepository.findByIdForUpdate(paymentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment", paymentId));
+
+        Refund known = refundRepository.findByRazorpayRefundId(razorpayRefundId).orElse(null);
+        if (known != null && known.getStatus() == RefundStatus.PROCESSED) {
+            log.info("Refund webhook already applied, skipping: {}", razorpayRefundId);
+            return;
+        }
+        if (known != null && !known.getAmountPaise().equals(amountPaise)) {
+            throw new BusinessException("REFUND_AMOUNT_MISMATCH",
+                    "Refund " + razorpayRefundId + " amount differs from our record");
+        }
+
+        long remaining = payment.getAmountPaise() - payment.getAmountRefundedPaise();
+        if (payment.getStatus() != PaymentStatus.CAPTURED || amountPaise > remaining) {
+            throw new BusinessException("REFUND_NOT_APPLICABLE",
+                    "Refund " + razorpayRefundId + " of " + amountPaise + "p cannot be applied: payment status "
+                            + payment.getStatus() + ", remaining balance " + remaining + "p");
+        }
+
+        Refund target = known;
+        if (target == null) {
+            // A refund that timed out on our side stays PENDING without a gateway id.
+            // Match it by amount, oldest first.
+            target = refundRepository.findByPaymentId(paymentId).stream()
+                    .filter(r -> r.getStatus() == RefundStatus.PENDING
+                            && r.getRazorpayRefundId() == null
+                            && r.getAmountPaise() == amountPaise)
+                    .min(Comparator.comparing(Refund::getCreatedAt,
+                            Comparator.nullsLast(Comparator.naturalOrder())))
+                    .orElse(null);
+        }
+        if (target == null) {
+            // A refund made outside PaySphere (for example from the gateway dashboard).
+            // The money has left, so our books must show it.
+            target = Refund.builder()
+                    .payment(payment)
+                    .businessOrder(payment.getBusinessOrder())
+                    .amountPaise(amountPaise)
+                    .currency(payment.getCurrency())
+                    .status(RefundStatus.PENDING)
+                    .reason("Refund created outside PaySphere")
+                    .idempotencyKey("webhook-" + razorpayRefundId)
+                    .build();
+        }
+
+        applyProcessedRefund(target, payment, razorpayRefundId, "WEBHOOK");
+    }
+    /**
+     * Applies a refund the gateway has CONFIRMED: marks it PROCESSED, updates the payment's
+     * refunded total and the order status, writes the audit entry and posts the ledger entry.
+     *
+     * Shared by createRefund and (next step) the refund webhook, so both behave identically.
+     * Must run inside a transaction, with the payment row already locked by the caller.
+     */
+    public Refund applyProcessedRefund(Refund refund, Payment payment,
+                                       String razorpayRefundId, String actor) {
+        refund.setRazorpayRefundId(razorpayRefundId);
+        refund.setStatus(RefundStatus.PROCESSED);
+        refund.setProcessedAt(Instant.now());
+
+        long newTotalRefunded = payment.getAmountRefundedPaise() + refund.getAmountPaise();
+        payment.setAmountRefundedPaise(newTotalRefunded);
+
+        BusinessOrder order = payment.getBusinessOrder();
+        if (newTotalRefunded >= payment.getAmountPaise()) {
+            payment.setStatus(PaymentStatus.REFUNDED);
+            if (order.canTransitionTo(BusinessOrderStatus.REFUNDED)) {
+                order.transitionTo(BusinessOrderStatus.REFUNDED);
+                orderRepository.save(order);
+            }
+        } else if (order.canTransitionTo(BusinessOrderStatus.PARTIALLY_REFUNDED)) {
+            order.transitionTo(BusinessOrderStatus.PARTIALLY_REFUNDED);
+            orderRepository.save(order);
+        }
+        paymentRepository.save(payment);
+
+        Refund saved = refundRepository.save(refund);
+        log.info("Refund processed: refundId={}, razorpayRefundId={}, amount={}p",
+                saved.getId(), razorpayRefundId, saved.getAmountPaise());
+
+        auditService.record("REFUND_PROCESSED", "Refund", saved.getId(),
+                "Refund of " + saved.getAmountPaise() + "p on payment " + payment.getId(), actor);
+        ledgerService.postRefund(saved.getId(), saved.getAmountPaise(), saved.getCurrency());
+        return saved;
+    }
+
+    /** A clear 4xx from the gateway means nothing was refunded. Anything else is uncertain. */
     private boolean isDefinitiveFailure(Exception e) {
         Throwable cause = e.getCause() != null ? e.getCause() : e;
         String msg = cause.getMessage() == null ? "" : cause.getMessage();
         return msg.startsWith("Razorpay API error: HTTP 4")
                 && !msg.startsWith("Razorpay API error: HTTP 409");
     }
+
     /** Get all refunds for a payment. */
     @Transactional(readOnly = true)
     public List<RefundResponse> getRefundsForPayment(UUID paymentId) {

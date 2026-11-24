@@ -1,5 +1,6 @@
 package com.paysphere.webhook;
 
+import com.paysphere.refund.service.RefundService;
 import com.paysphere.gateway.PaymentGateway;
 import com.paysphere.payment.service.PaymentService;
 import com.paysphere.webhook.entity.WebhookEvent;
@@ -19,10 +20,16 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.anyLong;
+
 
 @ExtendWith(MockitoExtension.class)
 class WebhookServiceTest {
+    
+    @Mock 
+    private RefundService refundService;
 
     @Mock
     private WebhookEventRepository webhookEventRepository;
@@ -125,5 +132,35 @@ class WebhookServiceTest {
 
         verify(paymentService).handleWebhookCapture(any(), any(), any());
         assertThat(failed.getStatus()).isEqualTo(WebhookStatus.PROCESSED);
+    }
+        private String refundProcessedPayload(String eventId, String refundId, String paymentId, long amount) {
+        return "{\"id\":\"" + eventId + "\",\"event\":\"refund.processed\",\"payload\":{\"refund\":{\"entity\":{\"id\":\""
+                + refundId + "\",\"payment_id\":\"" + paymentId + "\",\"amount\":" + amount + ",\"currency\":\"INR\"}}}}";
+    }
+
+    @Test
+    @DisplayName("refund.processed webhook passes refund id, payment id and amount to RefundService")
+    void testRefundProcessedIsApplied() {
+        String payload = refundProcessedPayload("evt_r1", "rfnd_1", "pay_1", 20000L);
+        when(paymentGateway.verifyWebhookSignature(payload, "sig")).thenReturn(true);
+        when(webhookEventRepository.existsByRazorpayEventId("evt_r1")).thenReturn(false);
+        when(webhookEventRepository.save(any(WebhookEvent.class))).thenAnswer(i -> i.getArgument(0));
+
+        webhookService.processWebhook(payload, "sig");
+
+        verify(refundService).handleWebhookRefundProcessed("rfnd_1", "pay_1", 20000L);
+    }
+
+    @Test
+    @DisplayName("refund.processed without a refund entity is ignored, not retried forever")
+    void testRefundProcessedWithoutEntityIsIgnored() {
+        String payload = "{\"id\":\"evt_r2\",\"event\":\"refund.processed\",\"payload\":{}}";
+        when(paymentGateway.verifyWebhookSignature(payload, "sig")).thenReturn(true);
+        when(webhookEventRepository.existsByRazorpayEventId("evt_r2")).thenReturn(false);
+        when(webhookEventRepository.save(any(WebhookEvent.class))).thenAnswer(i -> i.getArgument(0));
+
+        webhookService.processWebhook(payload, "sig");
+
+        verify(refundService, never()).handleWebhookRefundProcessed(any(), any(), anyLong());
     }
 }

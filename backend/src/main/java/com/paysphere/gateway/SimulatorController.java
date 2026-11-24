@@ -10,6 +10,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import com.paysphere.webhook.service.WebhookService;
+import org.json.JSONObject;
+import java.util.UUID;
 
 import java.util.Map;
 
@@ -21,6 +24,7 @@ import java.util.Map;
 public class SimulatorController {
 
     private final SimulatedGateway gateway;
+    private final WebhookService webhookService;
 
     public record PayRequest(@NotBlank String razorpayOrderId, String outcome,
                              String method, Boolean international) {}
@@ -35,5 +39,36 @@ public class SimulatorController {
                 .map(result -> ResponseEntity.ok(ApiResponse.success(result)))
                 .orElseGet(() -> ResponseEntity.badRequest()
                         .body(ApiResponse.failure("Unknown simulated order")));
+    }
+        public record WebhookRequest(@NotBlank String eventType, String eventId,
+                                 String refundId, String paymentId, Long amountPaise) {}
+
+    /** Sends a correctly signed webhook to our own webhook handler. Currently: refund.processed. */
+    @PostMapping("/webhook")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> webhook(@Valid @RequestBody WebhookRequest request) {
+        if (!"refund.processed".equals(request.eventType())
+                || request.refundId() == null || request.paymentId() == null
+                || request.amountPaise() == null || request.amountPaise() <= 0) {
+            return ResponseEntity.badRequest().body(ApiResponse.failure(
+                    "Simulator supports eventType=refund.processed with refundId, paymentId and amountPaise"));
+        }
+        String eventId = request.eventId() != null ? request.eventId()
+                : "evt_sim_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+
+        JSONObject entity = new JSONObject()
+                .put("id", request.refundId())
+                .put("payment_id", request.paymentId())
+                .put("amount", request.amountPaise())
+                .put("currency", "INR")
+                .put("status", "processed");
+        JSONObject body = new JSONObject()
+                .put("entity", "event")
+                .put("event", request.eventType())
+                .put("id", eventId)
+                .put("payload", new JSONObject().put("refund", new JSONObject().put("entity", entity)));
+        String raw = body.toString();
+
+        webhookService.processWebhook(raw, gateway.signWebhook(raw));
+        return ResponseEntity.ok(ApiResponse.success(Map.of("eventId", eventId, "delivered", true)));
     }
 }
