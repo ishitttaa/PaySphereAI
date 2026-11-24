@@ -7,8 +7,13 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
 import java.util.Optional;
 import java.util.UUID;
+import java.time.Instant;
 
 @Repository
 public interface BusinessOrderRepository extends JpaRepository<BusinessOrder, UUID> {
@@ -24,4 +29,17 @@ public interface BusinessOrderRepository extends JpaRepository<BusinessOrder, UU
     boolean existsByOrderReference(String orderReference);
 
     long countByStatus(BusinessOrderStatus status);
+        /**
+     * Expires unpaid orders in ONE atomic statement. Orders that already have any payment
+     * attached are never touched.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("update BusinessOrder o "
+            + "set o.status = com.paysphere.order.entity.BusinessOrderStatus.PAYMENT_EXPIRED, "
+            + "    o.updatedAt = :now "
+            + "where o.status in (com.paysphere.order.entity.BusinessOrderStatus.PENDING, "
+            + "                   com.paysphere.order.entity.BusinessOrderStatus.PAYMENT_INITIATED) "
+            + "and o.expiresAt is not null and o.expiresAt < :cutoff "
+            + "and not exists (select p.id from Payment p where p.businessOrder.id = o.id)")
+    int expireStaleOrders(@Param("now") Instant now, @Param("cutoff") Instant cutoff);
 }
