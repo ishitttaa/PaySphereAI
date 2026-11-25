@@ -16,4 +16,5 @@ public interface RiskFlagRepository extends JpaRepository<RiskFlag, UUID> {
     Page<RiskFlag> findByStatusOrderByCreatedAtDesc(RiskFlagStatus status, Pageable pageable);
     Page<RiskFlag> findAllByOrderByCreatedAtDesc(Pageable pageable);
     long countByStatus(RiskFlagStatus status);
+    boolean existsByEntityTypeAndEntityIdAndRuleCode(String entityType, UUID entityId, String ruleCode);
 }

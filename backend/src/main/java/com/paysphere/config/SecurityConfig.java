@@ -83,7 +83,9 @@ public class SecurityConfig {
                 auth.requestMatchers(HttpMethod.POST, "/api/v1/refunds", "/api/v1/settlements/record",
                         "/api/v1/risk-flags/*/dismiss").hasRole(ADMIN);
                 auth.requestMatchers("/api/v1/audit-logs/**").hasRole(ADMIN);
-
+                auth.requestMatchers(HttpMethod.POST, "/api/v1/refunds", "/api/v1/settlements/record",
+                        "/api/v1/risk-flags/*/dismiss", "/api/v1/reconciliation/run").hasRole(ADMIN);
+                        
                 // Staff: read-only views
                 auth.requestMatchers(HttpMethod.GET, "/api/v1/orders/**", "/api/v1/payments/**",
                         "/api/v1/refunds/**", "/api/v1/ledger/**", "/api/v1/settlements/**",

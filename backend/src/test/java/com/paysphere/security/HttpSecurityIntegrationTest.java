@@ -64,6 +64,7 @@ class HttpSecurityIntegrationTest extends BaseIntegrationTest {
             "POST /api/v1/refunds",
             "POST /api/v1/settlements/record",
             "POST /api/v1/risk-flags/" + ID + "/dismiss",
+            "POST /api/v1/reconciliation/run",
             "GET /api/v1/audit-logs",
             "GET /api/v1/audit-logs/entity/Payment/" + ID);
 
