@@ -209,9 +209,17 @@ public class RazorpayAdapter implements PaymentGateway {
             result.put("payment_id", json.getString("payment_id"));
             log.info("Refund created: refundId={}, status={}", result.get("id"), result.get("status"));
             return result;
+        } catch (GatewayException e) {
+            log.error("Gateway answered the refund for payment {} with: {}", razorpayPaymentId, e.getMessage());
+            throw e;
         } catch (Exception e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
             log.error("Failed to create refund for payment {}: {}", razorpayPaymentId, e.getMessage());
-            throw new RuntimeException("Failed to create refund: " + e.getMessage(), e);
+            // Timeout, network error or unreadable reply: we do NOT know whether the refund happened.
+            throw new GatewayException(GatewayException.Outcome.UNKNOWN, null,
+                    "Failed to create refund: " + e.getMessage(), e);
         }
     }
 

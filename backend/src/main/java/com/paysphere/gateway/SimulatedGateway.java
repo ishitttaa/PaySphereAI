@@ -96,9 +96,8 @@ public class SimulatedGateway implements PaymentGateway {
                                             String reason, String idempotencyKey) {
         SimPayment p = payments.get(paymentId);
         if (p != null && amountPaise > p.amountPaise()) {
-            // Looks like a real Razorpay 4xx rejection, so RefundService treats it as definitive.
-            throw new RuntimeException("Failed to create refund",
-                    new IOException("Razorpay API error: HTTP 400 -> refund exceeds payment amount"));
+            // A clear rejection, like the real gateway's HTTP 400: nothing was refunded.
+            throw GatewayException.fromHttpStatus(400, "refund exceeds payment amount");
         }
         // Same idempotency key returns the same refund, like the real API.
         return refundsByKey.computeIfAbsent(idempotencyKey, k -> {

@@ -55,7 +55,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiResponse.failure(ex.getMessage()));
     }
-
+    
+    @ExceptionHandler(InvalidRequestException.class)
+    public ResponseEntity<ApiResponse<Void>> handleInvalidRequest(InvalidRequestException ex) {
+        log.warn("Invalid request [{}]: {}", ex.getErrorCode(), ex.getMessage());
+        return ResponseEntity.badRequest().body(ApiResponse.failure(ex.getMessage()));
+    }
     /**
      * Handles business rule violations — returns HTTP 409 Conflict.
      */

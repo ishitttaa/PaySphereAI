@@ -53,8 +53,9 @@ class SimulatedGatewayTest {
     @Test
     void refundLargerThanPaymentIsRejectedLikeRazorpay() {
         String paymentId = (String) paidOrder(50000L, true).get("razorpayPaymentId");
-        assertThatThrownBy(() -> gateway.createRefund(paymentId, 60000L, "r", "refund-key-0002"))
-                .hasRootCauseMessage("Razorpay API error: HTTP 400 -> refund exceeds payment amount");
+            assertThatThrownBy(() -> gateway.createRefund(paymentId, 60000L, "r", "refund-key-0002"))
+                .isInstanceOfSatisfying(GatewayException.class,
+                        e -> assertThat(e.isDefinitiveRejection()).isTrue());
     }
 
     @Test

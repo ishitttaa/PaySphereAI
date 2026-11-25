@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 /**
  * Checks the access rules of SecurityConfig through real HTTP calls against the real filter chain.
@@ -201,5 +202,16 @@ class HttpSecurityIntegrationTest extends BaseIntegrationTest {
 
         mockMvc.perform(get("/api/v1/products").header("Origin", "http://evil.example"))
                 .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+    }
+    @Test
+    void refundsRequireAnIdempotencyKey() throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/refunds")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"paymentId\":\"" + ID + "\",\"reason\":\"test\"}")
+                        .header("Authorization", "Bearer " + admin()))
+                .andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(result.getResponse().getContentAsString()).contains("Idempotency-Key");
     }
 }

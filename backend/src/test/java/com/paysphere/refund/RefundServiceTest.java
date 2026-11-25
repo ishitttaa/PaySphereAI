@@ -24,6 +24,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import java.util.List;
 import org.mockito.ArgumentCaptor;
+import com.paysphere.common.exception.InvalidRequestException;
+import com.paysphere.gateway.GatewayException;
 
 import java.util.Map;
 import java.util.Optional;
@@ -106,8 +108,7 @@ class RefundServiceTest {
         when(refundRepository.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
         when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
         when(paymentGateway.createRefund(any(), anyLong(), any(), any()))
-                .thenThrow(new RuntimeException("Failed to create refund",
-                        new java.io.IOException("Razorpay API error: HTTP 400 -> bad request")));
+                .thenThrow(GatewayException.fromHttpStatus(400, "bad request"));
 
         RefundResponse r = refundService.createRefund(request(30000L), "reject-key-001");
 
@@ -352,5 +353,57 @@ class RefundServiceTest {
 
         verify(refundRepository, never()).save(any());
         verify(ledgerService, never()).postRefundReversal(any(), anyLong(), any());
+    }
+        @Test
+    @DisplayName("a refund without an Idempotency-Key is rejected before anything else happens")
+    void testMissingIdempotencyKeyIsRejected() {
+        assertThatThrownBy(() -> refundService.createRefund(request(30000L), null))
+                .isInstanceOf(InvalidRequestException.class);
+        assertThatThrownBy(() -> refundService.createRefund(request(30000L), "   "))
+                .isInstanceOf(InvalidRequestException.class);
+
+        verifyNoInteractions(paymentRepository, refundRepository, paymentGateway);
+    }
+
+    @Test
+    @DisplayName("a malformed Idempotency-Key is rejected")
+    void testMalformedIdempotencyKeyIsRejected() {
+        assertThatThrownBy(() -> refundService.createRefund(request(30000L), "short"))
+                .isInstanceOf(InvalidRequestException.class);
+        assertThatThrownBy(() -> refundService.createRefund(request(30000L), "has spaces in it!"))
+                .isInstanceOf(InvalidRequestException.class);
+
+        verifyNoInteractions(paymentRepository, refundRepository, paymentGateway);
+    }
+
+    @Test
+    @DisplayName("a gateway 5xx leaves the refund PENDING: the outcome is unknown")
+    void testGatewayServerErrorLeavesPending() {
+        Payment p = payment();
+        when(paymentRepository.findByIdForUpdate(paymentId)).thenReturn(Optional.of(p));
+        when(refundRepository.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+        when(paymentGateway.createRefund(any(), anyLong(), any(), any()))
+                .thenThrow(GatewayException.fromHttpStatus(503, "unavailable"));
+
+        RefundResponse r = refundService.createRefund(request(30000L), "server-err-key-1");
+
+        assertThat(r.status()).isEqualTo(RefundStatus.PENDING);
+        verify(ledgerService, never()).postRefund(any(), anyLong(), any());
+    }
+
+    @Test
+    @DisplayName("a gateway 409 (same request still running) leaves the refund PENDING")
+    void testGatewayConflictLeavesPending() {
+        Payment p = payment();
+        when(paymentRepository.findByIdForUpdate(paymentId)).thenReturn(Optional.of(p));
+        when(refundRepository.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+        when(paymentGateway.createRefund(any(), anyLong(), any(), any()))
+                .thenThrow(GatewayException.fromHttpStatus(409, "request in progress"));
+
+        RefundResponse r = refundService.createRefund(request(30000L), "conflict-key-001");
+
+        assertThat(r.status()).isEqualTo(RefundStatus.PENDING);
     }
 }
