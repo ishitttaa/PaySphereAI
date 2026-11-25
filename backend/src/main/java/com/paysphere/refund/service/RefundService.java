@@ -1,5 +1,7 @@
 package com.paysphere.refund.service;
 
+import com.paysphere.common.exception.InvalidRequestException;
+import com.paysphere.gateway.GatewayException;
 import com.paysphere.audit.service.AuditService;
 import com.paysphere.common.exception.BusinessException;
 import com.paysphere.common.exception.ResourceNotFoundException;
@@ -50,28 +52,23 @@ public class RefundService {
     private final LedgerService ledgerService;
     private final AuditService auditService;
 
-    @Transactional
-    public RefundResponse createRefund(CreateRefundRequest request) {
-        return createRefund(request, null);
-    }
 
     @Transactional
     public RefundResponse createRefund(CreateRefundRequest request, String clientIdempotencyKey) {
         log.info("Creating refund for paymentId={}, amount={}p",
                 request.paymentId(), request.amountPaise());
 
-        // Step 0: Decide the idempotency key.
-        String idempotencyKey;
-        if (clientIdempotencyKey != null && !clientIdempotencyKey.isBlank()) {
-            if (!clientIdempotencyKey.matches("^[A-Za-z0-9_-]{8,64}$")) {
-                throw new BusinessException("INVALID_IDEMPOTENCY_KEY",
-                        "Idempotency-Key must be 8-64 characters: letters, digits, '-' or '_'");
-            }
-            idempotencyKey = "client-" + clientIdempotencyKey;
-        } else {
-            log.warn("Refund requested without Idempotency-Key: duplicate submissions are NOT protected");
-            idempotencyKey = "server-" + UUID.randomUUID();
+        // Step 0: The caller must send an Idempotency-Key, so a double click or a retry
+        // can never refund twice.
+        if (clientIdempotencyKey == null || clientIdempotencyKey.isBlank()) {
+            throw new InvalidRequestException("IDEMPOTENCY_KEY_REQUIRED",
+                    "The Idempotency-Key header is required for refunds");
         }
+        if (!clientIdempotencyKey.matches("^[A-Za-z0-9_-]{8,64}$")) {
+            throw new InvalidRequestException("INVALID_IDEMPOTENCY_KEY",
+                    "Idempotency-Key must be 8-64 characters: letters, digits, '-' or '_'");
+        }
+        String idempotencyKey = "client-" + clientIdempotencyKey;
 
         // Step 1: Load the payment and LOCK its row.
         Payment payment = paymentRepository.findByIdForUpdate(request.paymentId())
@@ -320,12 +317,12 @@ public class RefundService {
         return saved;
     }
 
-    /** A clear 4xx from the gateway means nothing was refunded. Anything else is uncertain. */
+    /** A clear 4xx from the gateway means nothing was refunded. Anything else is uncertain. */  /**
+     * Only a typed, definitive rejection from the gateway means "nothing was refunded".
+     * Any other exception, including types we did not think of, counts as UNCERTAIN.
+     */
     private boolean isDefinitiveFailure(Exception e) {
-        Throwable cause = e.getCause() != null ? e.getCause() : e;
-        String msg = cause.getMessage() == null ? "" : cause.getMessage();
-        return msg.startsWith("Razorpay API error: HTTP 4")
-                && !msg.startsWith("Razorpay API error: HTTP 409");
+        return e instanceof GatewayException g && g.isDefinitiveRejection();
     }
 
     /** Get all refunds for a payment. */
