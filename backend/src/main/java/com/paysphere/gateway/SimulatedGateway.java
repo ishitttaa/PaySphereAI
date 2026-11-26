@@ -16,7 +16,7 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-
+import java.util.List;
 /**
  * A fake payment gateway for local development and demos. No real money, no network.
  * Everything AFTER the gateway (signature checks, ledger, audit, risk, refunds) is real code.
@@ -38,7 +38,21 @@ public class SimulatedGateway implements PaymentGateway {
     private final SecureRandom random = new SecureRandom();
     private final byte[] paymentSecret = new byte[32];
     private final byte[] webhookSecret = new byte[32];
+    
+    public enum RefundMode { NORMAL, TIMEOUT_AFTER_SUCCESS, TIMEOUT_NO_EFFECT }
 
+    private volatile RefundMode refundMode = RefundMode.NORMAL;
+
+    /** Simulator-only: makes refund calls misbehave, so reconciliation can be tried out. */
+    public void setRefundMode(RefundMode mode) {
+        this.refundMode = mode;
+        log.warn("PAYMENT SIMULATOR: refund mode is now {}", mode);
+    }
+
+    private GatewayException simulatedTimeout() {
+        return new GatewayException(GatewayException.Outcome.UNKNOWN, null, "Simulated gateway timeout",
+                new java.net.http.HttpTimeoutException("simulated timeout"));
+    }
     public SimulatedGateway(@Value("${APP_ENV:development}") String appEnv) {
         if ("production".equalsIgnoreCase(appEnv)) {
             throw new IllegalStateException(
@@ -99,15 +113,37 @@ public class SimulatedGateway implements PaymentGateway {
             // A clear rejection, like the real gateway's HTTP 400: nothing was refunded.
             throw GatewayException.fromHttpStatus(400, "refund exceeds payment amount");
         }
+        if (refundMode == RefundMode.TIMEOUT_NO_EFFECT && !refundsByKey.containsKey(idempotencyKey)) {
+            throw simulatedTimeout();      // the request "never arrived"
+        }
         // Same idempotency key returns the same refund, like the real API.
-        return refundsByKey.computeIfAbsent(idempotencyKey, k -> {
+        Map<String, Object> refund = refundsByKey.computeIfAbsent(idempotencyKey, k -> {
             Map<String, Object> result = new HashMap<>();
             result.put("id", "rfnd_sim_" + randomId(14));
             result.put("status", "processed");
             result.put("amount", amountPaise);
+            result.put("currency", p == null ? "INR" : p.currency());
             result.put("payment_id", paymentId);
+            result.put("created_at", java.time.Instant.now().getEpochSecond());
             return result;
         });
+        if (refundMode == RefundMode.TIMEOUT_AFTER_SUCCESS) {
+            throw simulatedTimeout();      // the refund happened, but we never heard back
+        }
+        return refund;
+    }
+
+    @Override
+    public List<Map<String, Object>> fetchRefundsForPayment(String razorpayPaymentId) {
+        if (!payments.containsKey(razorpayPaymentId)) {
+            // Like the real gateway: it does not know this payment id.
+            throw GatewayException.fromHttpStatus(400, "The id provided does not exist");
+        }
+        return refundsByKey.values().stream()
+                .filter(r -> razorpayPaymentId.equals(r.get("payment_id")))
+                .sorted((a, b) -> Long.compare(((Number) b.get("created_at")).longValue(),
+                                               ((Number) a.get("created_at")).longValue()))
+                .toList();
     }
 
     // ── Simulator-only: stands in for the customer paying in the checkout popup ──

@@ -7,7 +7,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import com.paysphere.refund.service.RefundReconciler ;
+import java.util.Map;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -21,6 +22,7 @@ public class ReconciliationService {
 
     private final ReconciliationQueries queries;
     private final RiskFlagRepository riskFlagRepository;
+    private final RefundReconciler refundReconciler;
     private final AuditService auditService;
 
     /**
@@ -29,8 +31,13 @@ public class ReconciliationService {
      */
     @Transactional
     public ReconciliationReport run(Instant now, String actor) {
+        // First settle refunds stuck in PENDING by asking the gateway, THEN check our own books,
+        // so a refund that has just been settled is not reported as a problem.
+        Map<String, Integer> refundsSettled = refundReconciler.reconcilePendingRefunds(now);
+
         List<ReconciliationFinding> findings =
                 queries.findAllProblems(now.minus(STALE_PENDING_REFUND_AFTER));
+        // ... (loop jo flags banata hai, waisa ka waisa)
 
         int newFlags = 0;
         for (ReconciliationFinding f : findings) {
@@ -49,9 +56,10 @@ public class ReconciliationService {
         }
 
         auditService.record("RECONCILIATION_RUN", "Reconciliation", null,
-                findings.size() + " problem(s) found, " + newFlags + " new flag(s)", actor);
+                findings.size() + " problem(s) found, " + newFlags + " new flag(s), pending refunds settled: "
+                        + refundsSettled, actor);
         log.info("Reconciliation finished: {} problem(s), {} new flag(s)", findings.size(), newFlags);
-        return new ReconciliationReport(now, findings.size(), newFlags, findings);
+        return new ReconciliationReport(now, findings.size(), newFlags, refundsSettled, findings);
     }
 
     private static String shorten(String text) {

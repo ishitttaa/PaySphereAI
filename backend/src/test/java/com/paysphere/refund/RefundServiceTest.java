@@ -26,7 +26,8 @@ import java.util.List;
 import org.mockito.ArgumentCaptor;
 import com.paysphere.common.exception.InvalidRequestException;
 import com.paysphere.gateway.GatewayException;
-
+import java.util.HashMap;
+import java.util.Set;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -405,5 +406,116 @@ class RefundServiceTest {
         RefundResponse r = refundService.createRefund(request(30000L), "conflict-key-001");
 
         assertThat(r.status()).isEqualTo(RefundStatus.PENDING);
+    }
+        private Map<String, Object> gw(String id, long amount, String status) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("id", id);
+        m.put("amount", amount);
+        m.put("status", status);
+        m.put("payment_id", "pay_abc");
+        m.put("created_at", java.time.Instant.now().getEpochSecond());
+        return m;
+    }
+
+    private Refund stubPendingForSettling(Payment p, long amount) {
+        Refund pending = refundWith(p, RefundStatus.PENDING, null, amount);
+        when(refundRepository.findPaymentIdByRefundId(pending.getId())).thenReturn(Optional.of(paymentId));
+        when(paymentRepository.findByIdForUpdate(paymentId)).thenReturn(Optional.of(p));
+        when(refundRepository.findById(pending.getId())).thenReturn(Optional.of(pending));
+        when(refundRepository.findByPaymentId(paymentId)).thenReturn(List.of(pending));
+        return pending;
+    }
+
+    @Test
+    @DisplayName("settling: a processed refund at the gateway completes our PENDING refund")
+    void testSettleProcessed() {
+        Payment p = payment();
+        Refund pending = stubPendingForSettling(p, 30000L);
+        when(paymentGateway.fetchRefundsForPayment("pay_abc")).thenReturn(List.of(gw("rfnd_g1", 30000L, "processed")));
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        assertThat(refundService.settlePendingRefund(pending.getId())).isEqualTo("PROCESSED");
+
+        assertThat(pending.getStatus()).isEqualTo(RefundStatus.PROCESSED);
+        assertThat(pending.getRazorpayRefundId()).isEqualTo("rfnd_g1");
+        assertThat(p.getAmountRefundedPaise()).isEqualTo(30000L);
+        verify(ledgerService).postRefund(eq(pending.getId()), eq(30000L), eq("INR"));
+    }
+
+    @Test
+    @DisplayName("settling: no matching refund at the gateway means it never happened")
+    void testSettleNoGatewayRefund() {
+        Payment p = payment();
+        Refund pending = stubPendingForSettling(p, 30000L);
+        when(paymentGateway.fetchRefundsForPayment("pay_abc")).thenReturn(List.of());
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        assertThat(refundService.settlePendingRefund(pending.getId())).isEqualTo("FAILED_NO_GATEWAY_REFUND");
+
+        assertThat(pending.getStatus()).isEqualTo(RefundStatus.FAILED);
+        assertThat(p.getAmountRefundedPaise()).isZero();
+        verify(ledgerService, never()).postRefund(any(), anyLong(), any());
+    }
+
+    @Test
+    @DisplayName("settling: a failed refund at the gateway fails ours and posts nothing")
+    void testSettleFailedAtGateway() {
+        Payment p = payment();
+        Refund pending = stubPendingForSettling(p, 30000L);
+        when(paymentGateway.fetchRefundsForPayment("pay_abc")).thenReturn(List.of(gw("rfnd_g2", 30000L, "failed")));
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        assertThat(refundService.settlePendingRefund(pending.getId())).isEqualTo("FAILED_AT_GATEWAY");
+
+        assertThat(pending.getStatus()).isEqualTo(RefundStatus.FAILED);
+        assertThat(pending.getRazorpayRefundId()).isEqualTo("rfnd_g2");
+        verify(ledgerService, never()).postRefund(any(), anyLong(), any());
+    }
+
+    @Test
+    @DisplayName("settling: a refund still pending at the gateway stays PENDING but gets linked")
+    void testSettleStillPendingAtGateway() {
+        Payment p = payment();
+        Refund pending = stubPendingForSettling(p, 30000L);
+        when(paymentGateway.fetchRefundsForPayment("pay_abc")).thenReturn(List.of(gw("rfnd_g3", 30000L, "pending")));
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        assertThat(refundService.settlePendingRefund(pending.getId())).isEqualTo("STILL_PENDING_AT_GATEWAY");
+
+        assertThat(pending.getStatus()).isEqualTo(RefundStatus.PENDING);
+        assertThat(pending.getRazorpayRefundId()).isEqualTo("rfnd_g3");
+    }
+
+    @Test
+    @DisplayName("settling: a refund that is no longer PENDING is skipped without calling the gateway")
+    void testSettleAlreadySettled() {
+        Payment p = payment();
+        Refund done = refundWith(p, RefundStatus.PROCESSED, "rfnd_done", 30000L);
+        when(refundRepository.findPaymentIdByRefundId(done.getId())).thenReturn(Optional.of(paymentId));
+        when(paymentRepository.findByIdForUpdate(paymentId)).thenReturn(Optional.of(p));
+        when(refundRepository.findById(done.getId())).thenReturn(Optional.of(done));
+
+        assertThat(refundService.settlePendingRefund(done.getId())).isEqualTo("ALREADY_SETTLED");
+
+        verify(paymentGateway, never()).fetchRefundsForPayment(any());
+    }
+
+    @Test
+    @DisplayName("settling: gateway refunds already linked to another of our refunds are not matched again")
+    void testSettleSkipsAlreadyLinkedGatewayRefunds() {
+        Payment p = payment();
+        Refund pending = refundWith(p, RefundStatus.PENDING, null, 30000L);
+        Refund other = refundWith(p, RefundStatus.PROCESSED, "rfnd_taken", 30000L);
+        when(refundRepository.findPaymentIdByRefundId(pending.getId())).thenReturn(Optional.of(paymentId));
+        when(paymentRepository.findByIdForUpdate(paymentId)).thenReturn(Optional.of(p));
+        when(refundRepository.findById(pending.getId())).thenReturn(Optional.of(pending));
+        when(refundRepository.findByPaymentId(paymentId)).thenReturn(List.of(pending, other));
+        when(paymentGateway.fetchRefundsForPayment("pay_abc")).thenReturn(List.of(
+                gw("rfnd_taken", 30000L, "processed"), gw("rfnd_free", 30000L, "processed")));
+        when(refundRepository.save(any(Refund.class))).thenAnswer(i -> i.getArgument(0));
+
+        refundService.settlePendingRefund(pending.getId());
+
+        assertThat(pending.getRazorpayRefundId()).isEqualTo("rfnd_free");
     }
 }

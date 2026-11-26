@@ -3,7 +3,7 @@ package com.paysphere.gateway;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
-
+import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -68,5 +68,38 @@ class SimulatedGatewayTest {
         String body = "{\"event\":\"refund.processed\"}";
         assertThat(gateway.verifyWebhookSignature(body, gateway.signWebhook(body))).isTrue();
         assertThat(gateway.verifyWebhookSignature(body + " ", gateway.signWebhook(body))).isFalse();
+    }
+        @Test
+    void timeoutAfterSuccessThrowsButTheRefundExistsAtTheGateway() {
+        String paymentId = (String) paidOrder(50000L, true).get("razorpayPaymentId");
+        gateway.setRefundMode(SimulatedGateway.RefundMode.TIMEOUT_AFTER_SUCCESS);
+
+        assertThatThrownBy(() -> gateway.createRefund(paymentId, 10000L, "r", "refund-key-0003"))
+                .isInstanceOfSatisfying(GatewayException.class,
+                        e -> assertThat(e.isDefinitiveRejection()).isFalse());
+        gateway.setRefundMode(SimulatedGateway.RefundMode.NORMAL);
+
+        List<Map<String, Object>> refunds = gateway.fetchRefundsForPayment(paymentId);
+        assertThat(refunds).hasSize(1);
+        assertThat(refunds.get(0).get("status")).isEqualTo("processed");
+    }
+
+    @Test
+    void timeoutWithNoEffectLeavesNothingAtTheGateway() {
+        String paymentId = (String) paidOrder(50000L, true).get("razorpayPaymentId");
+        gateway.setRefundMode(SimulatedGateway.RefundMode.TIMEOUT_NO_EFFECT);
+
+        assertThatThrownBy(() -> gateway.createRefund(paymentId, 10000L, "r", "refund-key-0004"))
+                .isInstanceOf(GatewayException.class);
+        gateway.setRefundMode(SimulatedGateway.RefundMode.NORMAL);
+
+        assertThat(gateway.fetchRefundsForPayment(paymentId)).isEmpty();
+    }
+
+    @Test
+    void listingRefundsOfAnUnknownPaymentIsRejected() {
+        assertThatThrownBy(() -> gateway.fetchRefundsForPayment("pay_sim_unknown"))
+                .isInstanceOfSatisfying(GatewayException.class,
+                        e -> assertThat(e.isDefinitiveRejection()).isTrue());
     }
 }

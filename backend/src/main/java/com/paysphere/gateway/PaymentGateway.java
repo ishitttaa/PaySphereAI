@@ -1,6 +1,7 @@
 package com.paysphere.gateway;
 
 import java.util.Map;
+import java.util.List;
 
 /**
  * PaymentGateway — Interface abstraction over the payment provider.
@@ -73,4 +74,11 @@ public interface PaymentGateway {
                                      long amountPaise,
                                      String reason,
                                      String idempotencyKey);
+
+     /**
+     * Lists the refunds the gateway holds for a payment (newest first, up to 100).
+     * Each map has at least: id, amount (paise), payment_id, status ("pending", "processed" or
+     * "failed") and created_at (epoch seconds).
+     */
+    List<Map<String, Object>> fetchRefundsForPayment(String razorpayPaymentId);
 }
