@@ -73,4 +73,17 @@ public class SimulatorController {
         webhookService.processWebhook(raw, gateway.signWebhook(raw));
         return ResponseEntity.ok(ApiResponse.success(Map.of("eventId", eventId, "delivered", true)));
     }
+        public record RefundModeRequest(@NotBlank String mode) {}
+
+    /** Makes the simulator's refund calls misbehave: NORMAL, TIMEOUT_AFTER_SUCCESS or TIMEOUT_NO_EFFECT. */
+    @PostMapping("/refund-mode")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> refundMode(@Valid @RequestBody RefundModeRequest request) {
+        try {
+            gateway.setRefundMode(SimulatedGateway.RefundMode.valueOf(request.mode().toUpperCase()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.failure(
+                    "mode must be NORMAL, TIMEOUT_AFTER_SUCCESS or TIMEOUT_NO_EFFECT"));
+        }
+        return ResponseEntity.ok(ApiResponse.success(Map.of("mode", request.mode().toUpperCase())));
+    }
 }

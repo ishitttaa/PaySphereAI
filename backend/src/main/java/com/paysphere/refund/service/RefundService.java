@@ -22,7 +22,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import java.util.Objects;
+import java.util.Set;
+import org.springframework.transaction.annotation.Propagation;
 import java.util.Comparator;
 import java.time.Instant;
 import java.util.List;
@@ -253,7 +255,82 @@ public class RefundService {
         auditService.record("REFUND_FAILED", "Refund", refund.getId(),
                 "Gateway reported refund " + razorpayRefundId + " failed (" + amountPaise + "p)", "WEBHOOK");
     }
+        /**
+     * Settles ONE stale PENDING refund by asking the gateway what really happened.
+     * Runs in its own transaction, so one failing refund cannot spoil the others.
+     * Safe to call again: a refund that is no longer PENDING is skipped.
+     * Returns a short label describing the outcome.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public String settlePendingRefund(UUID refundId) {
+        UUID paymentId = refundRepository.findPaymentIdByRefundId(refundId).orElse(null);
+        if (paymentId == null) {
+            return "SKIPPED";
+        }
+        // Lock the payment row FIRST, then read the refund, so we never act on stale data.
+        Payment payment = paymentRepository.findByIdForUpdate(paymentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment", paymentId));
+        Refund refund = refundRepository.findById(refundId).orElse(null);
+        if (refund == null || refund.getStatus() != RefundStatus.PENDING) {
+            return "ALREADY_SETTLED";
+        }
 
+        List<Map<String, Object>> gatewayRefunds =
+                paymentGateway.fetchRefundsForPayment(payment.getRazorpayPaymentId());
+
+        // Gateway refunds that already belong to one of OUR refunds must not be matched again.
+        Set<String> alreadyLinked = refundRepository.findByPaymentId(paymentId).stream()
+                .map(Refund::getRazorpayRefundId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        long earliestAllowed = refund.getCreatedAt() == null
+                ? 0L : refund.getCreatedAt().getEpochSecond() - 300;
+
+        Map<String, Object> match = gatewayRefunds.stream()
+                .filter(g -> g.get("id") instanceof String id && !alreadyLinked.contains(id))
+                .filter(g -> g.get("amount") instanceof Number n && n.longValue() == refund.getAmountPaise())
+                .filter(g -> !(g.get("created_at") instanceof Number c) || c.longValue() >= earliestAllowed)
+                .min(Comparator.comparingLong(g -> g.get("created_at") instanceof Number c ? c.longValue() : 0L))
+                .orElse(null);
+
+        if (match == null) {
+            // The gateway has no refund like ours, long after our request: it never happened.
+            refund.setStatus(RefundStatus.FAILED);
+            refundRepository.save(refund);
+            auditService.record("REFUND_FAILED", "Refund", refund.getId(),
+                    "No matching refund exists at the gateway; marked failed by reconciliation",
+                    "RECONCILIATION");
+            log.warn("Pending refund {} has no counterpart at the gateway: marked FAILED", refund.getId());
+            return "FAILED_NO_GATEWAY_REFUND";
+        }
+
+        String gatewayRefundId = (String) match.get("id");
+        String gatewayStatus = String.valueOf(match.get("status"));
+
+        if ("processed".equals(gatewayStatus)) {
+            long remaining = payment.getAmountPaise() - payment.getAmountRefundedPaise();
+            if (payment.getStatus() != PaymentStatus.CAPTURED || refund.getAmountPaise() > remaining) {
+                throw new BusinessException("REFUND_NOT_APPLICABLE",
+                        "Gateway refund " + gatewayRefundId + " cannot be applied: payment status "
+                                + payment.getStatus() + ", remaining balance " + remaining + "p");
+            }
+            applyProcessedRefund(refund, payment, gatewayRefundId, "RECONCILIATION");
+            return "PROCESSED";
+        }
+        if ("failed".equals(gatewayStatus)) {
+            refund.setRazorpayRefundId(gatewayRefundId);
+            refund.setStatus(RefundStatus.FAILED);
+            refundRepository.save(refund);
+            auditService.record("REFUND_FAILED", "Refund", refund.getId(),
+                    "Gateway reports refund " + gatewayRefundId + " failed (found by reconciliation)",
+                    "RECONCILIATION");
+            return "FAILED_AT_GATEWAY";
+        }
+        // Still being processed at the gateway: link it so a later webhook finds it by id.
+        refund.setRazorpayRefundId(gatewayRefundId);
+        refundRepository.save(refund);
+        return "STILL_PENDING_AT_GATEWAY";
+    }
     /** Undoes a refund we had already booked: payment total, statuses, and a reversing ledger entry. */
     private void reverseProcessedRefund(Refund refund, Payment payment) {
         long newTotal = Math.max(0L, payment.getAmountRefundedPaise() - refund.getAmountPaise());

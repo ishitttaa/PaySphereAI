@@ -1,5 +1,6 @@
 package com.paysphere.reconciliation;
 
+import com.paysphere.refund.service.RefundReconciler;
 import com.paysphere.audit.service.AuditService;
 import com.paysphere.risk.entity.RiskFlag;
 import com.paysphere.risk.entity.RiskSeverity;
@@ -30,7 +31,8 @@ class ReconciliationServiceTest {
     @Mock private RiskFlagRepository riskFlagRepository;
     @Mock private AuditService auditService;
     @InjectMocks private ReconciliationService service;
-
+    @Mock private RefundReconciler refundReconciler;
+    
     private final Instant now = Instant.parse("2026-01-01T12:00:00Z");
 
     private ReconciliationFinding finding(UUID id) {

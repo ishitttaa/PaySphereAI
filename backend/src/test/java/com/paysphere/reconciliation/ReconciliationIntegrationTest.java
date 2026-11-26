@@ -14,7 +14,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
-
+import org.junit.jupiter.api.AfterEach;
+import com.paysphere.gateway.SimulatedGateway;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -26,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * it directly in the database and checks that reconciliation notices.
  * Each test looks only at the rows it created, because the database is shared with other tests.
  */
+
 @AutoConfigureMockMvc
 @TestPropertySource(properties = "payment.gateway=simulator")
 class ReconciliationIntegrationTest extends BaseIntegrationTest {
@@ -35,6 +37,7 @@ class ReconciliationIntegrationTest extends BaseIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private JwtService jwtService;
     @Autowired private ReconciliationService reconciliationService;
+    @Autowired private SimulatedGateway simulatedGateway;
 
     private record Paid(UUID orderId, UUID paymentId) {}
 
@@ -69,18 +72,33 @@ class ReconciliationIntegrationTest extends BaseIntegrationTest {
         return new Paid(orderId, paymentId);
     }
 
-    private UUID createRefund(Paid paid, long amountPaise) throws Exception {
+    
+    private JsonNode requestRefund(Paid paid, long amountPaise) throws Exception {
         String adminToken = jwtService.createToken(
                 UUID.randomUUID(), "recon@example.com", List.of("PLATFORM_ADMIN"));
-        JsonNode refund = post("/api/v1/refunds",
+        return post("/api/v1/refunds",
                 "{\"paymentId\":\"" + paid.paymentId() + "\",\"amountPaise\":" + amountPaise
                         + ",\"reason\":\"recon\"}",
                 "Authorization", "Bearer " + adminToken,
                 "Idempotency-Key", "recon-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
+    }
+
+    private UUID createRefund(Paid paid, long amountPaise) throws Exception {
+        JsonNode refund = requestRefund(paid, amountPaise);
         assertThat(refund.get("status").asText()).isEqualTo("PROCESSED");
         return UUID.fromString(refund.get("id").asText());
     }
 
+    private void ageRefund(UUID refundId) {
+        jdbc.update("update refunds set created_at = now() - interval '2 hours' where id = ?", refundId);
+    }
+
+    @AfterEach
+    void cleanUp() {
+        simulatedGateway.setRefundMode(SimulatedGateway.RefundMode.NORMAL);
+        // Leave no stale PENDING refunds behind for other tests sharing this database.
+        jdbc.update("update refunds set status = 'FAILED' where status = 'PENDING'");
+    }
     private ReconciliationReport reconcile() {
         return reconciliationService.run(Instant.now(), "TEST");
     }
@@ -152,12 +170,19 @@ class ReconciliationIntegrationTest extends BaseIntegrationTest {
         assertThat(flagged(reconcile(), "RECON_FAILED_REFUND_NOT_REVERSED", refundId)).isTrue();
     }
 
-    @Test
-    void detectsARefundThatHasBeenPendingForTooLong() throws Exception {
-        Paid paid = createCapturedPayment();
-        UUID refundId = createRefund(paid, 20000L);
-        jdbc.update("update refunds set status = 'PENDING', created_at = now() - interval '2 hours' "
-                + "where id = ?", refundId);
+        @Test
+    void detectsARefundThatStaysPendingBecauseTheGatewayCannotBeAsked() throws Exception {
+        Paid base = createCapturedPayment();
+        String razorpayPaymentId = "pay_unknown_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        jdbc.update("insert into payments (business_order_id, razorpay_payment_id, razorpay_order_id, "
+                        + "status, amount_paise) values (?, ?, 'order_manual_y', 'CAPTURED', 1000)",
+                base.orderId(), razorpayPaymentId);
+        UUID paymentId = jdbc.queryForObject(
+                "select id from payments where razorpay_payment_id = ?", UUID.class, razorpayPaymentId);
+        UUID refundId = UUID.randomUUID();
+        jdbc.update("insert into refunds (id, payment_id, business_order_id, amount_paise, status, "
+                        + "idempotency_key, created_at) values (?, ?, ?, 300, 'PENDING', ?, now() - interval '2 hours')",
+                refundId, paymentId, base.orderId(), "manual-" + refundId);
 
         assertThat(flagged(reconcile(), "RECON_STALE_PENDING_REFUND", refundId)).isTrue();
     }

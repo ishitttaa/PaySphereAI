@@ -5,9 +5,12 @@ import com.paysphere.common.exception.SignatureVerificationException;
 import com.paysphere.config.RazorpayConfig;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.springframework.stereotype.Component;
-
+import java.util.ArrayList;
+import java.util.List;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
@@ -175,7 +178,33 @@ public class RazorpayAdapter implements PaymentGateway {
             throw new RuntimeException("Failed to fetch payment details: " + e.getMessage(), e);
         }
     }
-
+    @Override
+    public List<Map<String, Object>> fetchRefundsForPayment(String razorpayPaymentId) {
+        log.info("Fetching Razorpay refunds for payment: paymentId={}", razorpayPaymentId);
+        try {
+            String responseBody = RazorpayHttpClient.get(
+                    config.getBaseUrl() + "/payments/" + razorpayPaymentId + "/refunds?count=100",
+                    config.getKeyId(),
+                    config.getKeySecret()
+            );
+            JSONArray items = new JSONObject(responseBody).optJSONArray("items");
+            List<Map<String, Object>> result = new ArrayList<>();
+            if (items != null) {
+                for (int i = 0; i < items.length(); i++) {
+                    result.add(items.getJSONObject(i).toMap());
+                }
+            }
+            return result;
+        } catch (GatewayException e) {
+            throw e;
+        } catch (Exception e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new GatewayException(GatewayException.Outcome.UNKNOWN, null,
+                    "Failed to fetch refunds: " + e.getMessage(), e);
+        }
+    }
     /**
      * Creates a refund for a captured payment.
      *
