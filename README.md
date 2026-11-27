@@ -42,7 +42,7 @@ Where something was **not** verified, it says so. Last updated after **N11** (au
 
 ### A good first message from you
 
-> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and 133 tests pass. The next planned step is N7c (compare the gateway with our records). Have you merged the last pull request, and is CI green on `main`?"
+> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and 148 tests pass. N7c (compare the gateway with our records) is done; the next planned step is N9 (multi-tenancy). Have you merged the last pull request, and is CI green on `main`?"
 
 ---
 
@@ -96,7 +96,7 @@ Everything after the gateway (signature checks, amount checks, ledger, audit, ri
 | Login rate limiting | Done | `LoginAttemptLimiterTest`; owner-run: 5 × 401 then 429 |
 | Nightly reconciliation of payments, refunds and the ledger | Done (N7a) | `ReconciliationServiceTest`, `ReconciliationIntegrationTest` |
 | Stuck `PENDING` refunds settled by asking the gateway | Done (N7b) | `RefundServiceTest`, `ReconciliationIntegrationTest`, simulator failure modes |
-| Comparing **all** gateway payments with ours; finding paid-but-unrecorded payments | **Not implemented** (N7c) | |
+| Comparing gateway payments with ours; finding paid-but-unrecorded payments | **Done (N7c)** — last 48 hours of orders, last 24 hours of payments, up to 200 per run | Tests; simulator “paid but never verified” flow |
 | CI (GitHub Actions) | Green | Build, full test suite, and a leak scan of text files |
 | Frontend | **Not production-safe** (friend's work) | See section 14 |
 | Multi-tenancy, API keys, merchant roles | **Not implemented** (N9) | |
@@ -207,7 +207,7 @@ Expected in the log: `PAYMENT SIMULATOR ACTIVE` (simulator mode), Flyway at the 
 mvn test
 ```
 
-Expected: `Tests run: 133, Failures: 0, Errors: 0`. (If your count differs after adding tests, update this line.)
+Latest verified run: `Tests run: 148, Failures: 0, Errors: 0`. (Update this line if the suite changes.)
 
 ---
 
@@ -387,6 +387,7 @@ These are the project's invariants. Check every change against them.
 8. **Lock before read-modify-write** on shared money state (`findByIdForUpdate`), and **read the rows only after taking the lock**. Reading an entity first can leave a stale copy in the persistence context; use an id-only query to find the row to lock.
 9. **Write the audit entry in the same transaction as the money change** (`AuditService.record`, `Propagation.MANDATORY`).
 10. **A late payment must never be lost.** Expired orders can still become `PAYMENT_CAPTURED`; expiry never touches an order that has a payment.
+11. **A failed payment attempt does not end an order; a captured payment must always be recordable, even after a failure or expiry.**
 
 ### Authentication and authorisation
 
@@ -421,7 +422,7 @@ These are the project's invariants. Check every change against them.
 
 ## 10. Testing and CI
 
-`mvn test` runs **133 tests**:
+`mvn test` ran **148 tests** in the latest verified successful run:
 
 | Kind | Classes |
 |---|---|
@@ -453,7 +454,7 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 11. **N2:** `refund.processed` and `refund.failed` webhooks, including external refunds and reversal of a booked refund; the shared `applyProcessedRefund`; simulator-signed webhooks.
 12. **N4:** HTTP-level security tests (every route × anonymous, operator, admin, bad tokens, CORS).
 13. **N5, N6:** refunds require an `Idempotency-Key` (`400` otherwise); typed `GatewayException` replaces error-text matching.
-14. **N7a, N7b:** nightly reconciliation of payments, refunds and the ledger, and settlement of stuck `PENDING` refunds against the gateway, with simulator failure modes.
+14. **N7a, N7b, N7c:** nightly reconciliation of payments, refunds and the ledger; settlement of stuck `PENDING` refunds; gateway-payment comparison, including paid-but-unrecorded payments.
 15. **N11:** audit trail records the real actor, IP and browser; logins, settlements and flag dismissals are audited; the risk-flag reviewer comes from the token, not the request body.
 16. **Zero-fee settlement fix:** `postSettlement` skips zero-amount entries (fees = 0, or fees = gross), with two new tests in `LedgerServiceTest`.
 
@@ -461,7 +462,7 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 
 ## 12. Known issues and technical debt
 
-- **Reconciliation gaps** (N7c): only payments that have a stale `PENDING` refund are compared with the gateway. A payment the customer made at the gateway that never reached us (no verify call, no webhook) is **not** detected. Gateway refunds we never recorded are picked up only through the `refund.processed` webhook. A payment with more than 100 refunds shows only the first 100 to reconciliation.
+- **Reconciliation scope limits (N7c):** gateway lookup is requested only for orders in `PAYMENT_INITIATED`, `PAYMENT_EXPIRED` or `PAYMENT_FAILED` that have a gateway order id. Unpaid orders older than 48 hours are not checked again.
 - Reconciliation flags reuse the `risk_flags` table; thresholds (30 minutes, 5-minute grace) are constants, not settings.
 - `RazorpayAdapter.createOrder` and `fetchPayment` still wrap failures in a plain `RuntimeException`; only `createRefund` and `fetchRefundsForPayment` throw the typed `GatewayException`.
 - Order creation sends `X-Idempotency-Key`; it is **unverified** that Razorpay honours it for orders.
@@ -483,8 +484,6 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 Each item lists an acceptance test. Keep the steps small, one branch each.
 
 **N10. Dashboard numbers. (Done except pagination of list endpoints.)** SQL aggregate queries instead of `findAll()`; revenue net of refunds; pagination. Acceptance: with a known set of payments and refunds the dashboard figures equal the hand-computed ones (add an integration test).
-
-**N7c. Compare the gateway with our records.** Add gateway calls to list or fetch recent payments (and an order's payments); for payments of the last day compare status and amount; flag a gateway payment we never recorded (`RECON_GATEWAY_PAYMENT_NOT_RECORDED`) and a mismatch. Teach the simulator to produce a "paid but never verified" payment. Acceptance: that payment is detected.
 
 **N9. Multi-tenancy** (required by the original project proposal). A `merchants` table, `merchant_id` on orders, payments, refunds, ledger and audit, a `MERCHANT_ADMIN` and merchant-operator model, hashed revocable API keys, and tenant-scoped queries and endpoints. **Security-critical:** write cross-tenant access tests first (merchant A must never read, refund or reconcile merchant B's data), and extend `HttpSecurityIntegrationTest`. This is the largest remaining change: touch one table family per step.
 
@@ -560,7 +559,7 @@ Do not call the project production-ready until every box is ticked.
 - [ ] Database role without permission to drop triggers or alter the ledger
 - [ ] Rate limiting on every public endpoint, proxy-aware client IP
 - [ ] HTTPS and security headers; Swagger closed; actuator limited
-- [ ] Reconciliation running and **alerting** (N12), including gateway payment comparison (N7c)
+- [ ] Reconciliation running and **alerting** (N12), including gateway payment comparison
 - [ ] Backups tested; logs free of secrets and PII
 - [ ] Multi-tenant isolation tests passing (N9)
 - [ ] Dependency and secret scanning in CI (a dedicated scanner, not only the simple grep)
