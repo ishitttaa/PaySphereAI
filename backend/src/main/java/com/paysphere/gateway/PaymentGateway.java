@@ -81,4 +81,9 @@ public interface PaymentGateway {
      * "failed") and created_at (epoch seconds).
      */
     List<Map<String, Object>> fetchRefundsForPayment(String razorpayPaymentId);
+        /**
+     * Lists the payments the gateway holds for an order. Each map has at least: id, amount (paise),
+     * currency, status, captured (boolean), amount_refunded, order_id and created_at (epoch seconds).
+     */
+    List<Map<String, Object>> fetchPaymentsForOrder(String razorpayOrderId);
 }

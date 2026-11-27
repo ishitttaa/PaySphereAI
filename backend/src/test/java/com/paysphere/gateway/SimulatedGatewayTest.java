@@ -102,4 +102,23 @@ class SimulatedGatewayTest {
                 .isInstanceOfSatisfying(GatewayException.class,
                         e -> assertThat(e.isDefinitiveRejection()).isTrue());
     }
+        @Test
+    void listsThePaymentsOfAnOrderAndCanBackdateThem() {
+        String orderId = (String) gateway.createOrder(50000L, "INR", "rcpt", "key").get("id");
+        gateway.payOrder(orderId, true, "card", false, 30);
+
+        List<Map<String, Object>> payments = gateway.fetchPaymentsForOrder(orderId);
+
+        assertThat(payments).hasSize(1);
+        assertThat(payments.get(0).get("captured")).isEqualTo(true);
+        long createdAt = ((Number) payments.get(0).get("created_at")).longValue();
+        assertThat(createdAt).isLessThan(java.time.Instant.now().getEpochSecond() - 25 * 60);
+    }
+
+    @Test
+    void listingPaymentsOfAnUnknownOrderIsRejected() {
+        assertThatThrownBy(() -> gateway.fetchPaymentsForOrder("order_sim_unknown"))
+                .isInstanceOfSatisfying(GatewayException.class,
+                        e -> assertThat(e.isDefinitiveRejection()).isTrue());
+    }
 }

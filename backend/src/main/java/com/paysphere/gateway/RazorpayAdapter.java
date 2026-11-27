@@ -205,12 +205,40 @@ public class RazorpayAdapter implements PaymentGateway {
                     "Failed to fetch refunds: " + e.getMessage(), e);
         }
     }
+        @Override
+    public List<Map<String, Object>> fetchPaymentsForOrder(String razorpayOrderId) {
+        log.info("Fetching Razorpay payments for order: orderId={}", razorpayOrderId);
+        try {
+            String responseBody = RazorpayHttpClient.get(
+                    config.getBaseUrl() + "/orders/" + razorpayOrderId + "/payments",
+                    config.getKeyId(),
+                    config.getKeySecret()
+            );
+            JSONArray items = new JSONObject(responseBody).optJSONArray("items");
+            List<Map<String, Object>> result = new ArrayList<>();
+            if (items != null) {
+                for (int i = 0; i < items.length(); i++) {
+                    result.add(items.getJSONObject(i).toMap());
+                }
+            }
+            return result;
+        } catch (GatewayException e) {
+            throw e;
+        } catch (Exception e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new GatewayException(GatewayException.Outcome.UNKNOWN, null,
+                    "Failed to fetch payments for order: " + e.getMessage(), e);
+        }
+    }
     /**
      * Creates a refund for a captured payment.
      *
      * Partial refunds are supported: amountPaise can be less than the original.
      * Idempotency key prevents duplicate refunds if the API call is retried.
      */
+
     @Override
     public Map<String, Object> createRefund(String razorpayPaymentId,
                                              long amountPaise,

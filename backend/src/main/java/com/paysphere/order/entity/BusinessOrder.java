@@ -109,6 +109,7 @@ public class BusinessOrder {
             case REFUNDED -> targetStatus == BusinessOrderStatus.PARTIALLY_REFUNDED
                           || targetStatus == BusinessOrderStatus.PAYMENT_CAPTURED;            // wound back if a refund FAILED
             case PAYMENT_EXPIRED -> targetStatus == BusinessOrderStatus.PAYMENT_CAPTURED;  // a late payment must never be lost
+            case PAYMENT_FAILED -> targetStatus == BusinessOrderStatus.PAYMENT_CAPTURED;  // a failed attempt does not end the order: the customer can retry
             default -> false;  // Terminal states: REFUNDED, PAYMENT_FAILED, PAYMENT_EXPIRED
         };
     }

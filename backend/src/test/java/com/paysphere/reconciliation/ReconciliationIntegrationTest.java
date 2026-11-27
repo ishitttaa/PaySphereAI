@@ -19,7 +19,7 @@ import com.paysphere.gateway.SimulatedGateway;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
-
+import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -199,5 +199,56 @@ class ReconciliationIntegrationTest extends BaseIntegrationTest {
                 "select count(*) from risk_flags where entity_id = ? and rule_code = 'RECON_REFUND_TOTAL_MISMATCH'",
                 Integer.class, paid.paymentId());
         assertThat(flags).isEqualTo(1);
+    }
+         @Test
+    void recordsAPaymentPaidAtTheGatewayThatWasNeverVerified() throws Exception {
+        JsonNode order = post("/api/v1/orders",
+                "{\"productCode\":\"PAYSPHERE-BASIC\",\"customerName\":\"Missed Payment\","
+                        + "\"customerEmail\":\"missed@example.com\",\"customerPhone\":\"9999999999\"}");
+        String razorpayOrderId = order.get("razorpayOrderId").asText();
+        JsonNode pay = post("/api/v1/simulator/pay",
+                "{\"razorpayOrderId\":\"" + razorpayOrderId + "\",\"outcome\":\"SUCCESS\",\"minutesAgo\":30}");
+        String razorpayPaymentId = pay.get("razorpayPaymentId").asText();
+        // The customer's browser closed: /payments/verify was never called.
+
+        ReconciliationReport report = reconcile();
+
+        assertThat(report.gatewayPayments()).containsKey("RECORDED");
+        UUID paymentId = jdbc.queryForObject(
+                "select id from payments where razorpay_payment_id = ?", UUID.class, razorpayPaymentId);
+        assertThat(jdbc.queryForObject("select status from payments where id = ?", String.class, paymentId))
+                .isEqualTo("CAPTURED");
+        assertThat(jdbc.queryForObject(
+                "select count(*) from ledger_transactions where idempotency_key = ?",
+                Integer.class, "PAYMENT-" + paymentId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "select o.status from business_orders o join payments p on p.business_order_id = o.id "
+                        + "where p.id = ?", String.class, paymentId)).isEqualTo("PAYMENT_CAPTURED");
+        assertThat(jdbc.queryForObject(
+                "select actor_email from audit_logs where action = 'PAYMENT_CAPTURED' and entity_id = ?",
+                String.class, paymentId)).isEqualTo("RECONCILIATION");
+    }
+
+    @Test
+    void leavesAVeryRecentGatewayPaymentToTheNormalCheckoutFlow() throws Exception {
+        JsonNode order = post("/api/v1/orders",
+                "{\"productCode\":\"PAYSPHERE-BASIC\",\"customerName\":\"Still Paying\","
+                        + "\"customerEmail\":\"paying@example.com\",\"customerPhone\":\"9999999999\"}");
+        String razorpayOrderId = order.get("razorpayOrderId").asText();
+        JsonNode pay = post("/api/v1/simulator/pay",
+                "{\"razorpayOrderId\":\"" + razorpayOrderId + "\",\"outcome\":\"SUCCESS\"}");
+
+        reconcile();
+
+        assertThat(jdbc.queryForObject("select count(*) from payments where razorpay_payment_id = ?",
+                Integer.class, pay.get("razorpayPaymentId").asText())).isZero();
+    }
+
+    @Test
+    void flagsARecordedPaymentWhoseAmountDiffersFromTheGateway() throws Exception {
+        Paid paid = createCapturedPayment();
+        jdbc.update("update payments set amount_paise = amount_paise + 100 where id = ?", paid.paymentId());
+
+        assertThat(flagged(reconcile(), "RECON_GATEWAY_PAYMENT_MISMATCH", paid.paymentId())).isTrue();
     }
 }
