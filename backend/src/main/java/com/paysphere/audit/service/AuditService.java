@@ -1,11 +1,14 @@
+
 package com.paysphere.audit.service;
 
 import com.paysphere.audit.entity.AuditLog;
 import com.paysphere.audit.repository.AuditLogRepository;
+import com.paysphere.live.LiveEvent;
 import com.paysphere.security.CurrentUser;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.scheduling.annotation.Async;
@@ -31,6 +34,7 @@ import java.util.UUID;
 public class AuditService {
 
     private final AuditLogRepository auditLogRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * Record a money-related event INSIDE the caller's transaction.
@@ -45,6 +49,7 @@ public class AuditService {
     public void record(String action, String entityType, UUID entityId,
                        String description, String actorLabel) {
         HttpServletRequest request = currentRequest();
+
         auditLogRepository.save(AuditLog.builder()
                 .action(action)
                 .entityType(entityType)
@@ -54,6 +59,13 @@ public class AuditService {
                 .ipAddress(request == null ? null : truncate(request.getRemoteAddr(), 45))
                 .userAgent(request == null ? null : truncate(request.getHeader("User-Agent"), 500))
                 .build());
+
+        // Publish after saving the audit entry. LiveEventService handles delivery after commit.
+        eventPublisher.publishEvent(LiveEvent.of(
+                action,
+                entityId == null ? null : entityId.toString(),
+                null
+        ));
     }
 
     /**
