@@ -1,6 +1,7 @@
 package com.paysphere.reconciliation;
 
 import com.paysphere.gateway.PaymentGateway;
+import com.paysphere.payment.entity.PaymentStatus;
 import com.paysphere.payment.repository.PaymentRepository;
 import com.paysphere.payment.service.PaymentService;
 import com.paysphere.reconciliation.ReconciliationQueries.RecentPayment;
@@ -70,7 +71,7 @@ public class GatewayPaymentReconciler {
                 if (paymentId == null || !Boolean.TRUE.equals(gp.get("captured")) || !oldEnough(gp, now)) {
                     continue;
                 }
-                if (paymentRepository.existsByRazorpayPaymentId(paymentId)) {
+                if (paymentRepository.existsByRazorpayPaymentIdAndStatusNot(paymentId, PaymentStatus.FAILED)) {
                     continue;
                 }
                 if (refundedAtGateway(gp) > 0) {

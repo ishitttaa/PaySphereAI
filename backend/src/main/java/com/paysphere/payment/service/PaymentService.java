@@ -20,7 +20,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import java.util.Optional;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -66,12 +66,12 @@ public class PaymentService {
         log.info("Verifying payment: razorpayPaymentId={}, razorpayOrderId={}",
                 request.razorpayPaymentId(), request.razorpayOrderId());
 
-        // Idempotency check — if we already processed this payment, return it
-        if (paymentRepository.existsByRazorpayPaymentId(request.razorpayPaymentId())) {
+        // Idempotency check, with the row locked (rule 8). A FAILED attempt is not "processed":
+        // the checkout says it succeeded, so we verify it below and upgrade the row.
+        Payment existing = lockByGatewayPaymentId(request.razorpayPaymentId()).orElse(null);
+        if (existing != null && existing.getStatus() != PaymentStatus.FAILED) {
             log.info("Payment already processed: {}", request.razorpayPaymentId());
-            return paymentRepository.findByRazorpayPaymentId(request.razorpayPaymentId())
-                    .map(this::toPaymentResponse)
-                    .orElseThrow();
+            return toPaymentResponse(existing);
         }
 
         // Step 1: Find the business order by Razorpay order ID
@@ -113,9 +113,10 @@ public class PaymentService {
                     "Payment is not captured yet (status: " + paymentDetails.get("status") + ")");
         }
         // Step 4: Create the Payment record in our DB
-        Payment payment = buildPaymentFromRazorpayData(order, request, paymentDetails);
+        Payment payment = existing != null
+            ? upgradeFailedToCaptured(existing, paymentDetails, true)
+            : buildPaymentFromRazorpayData(order, request, paymentDetails);
         payment = paymentRepository.save(payment);
-
         // Step 5: Update the business order status
         order.transitionTo(BusinessOrderStatus.PAYMENT_CAPTURED);
         orderRepository.save(order);
@@ -125,8 +126,9 @@ public class PaymentService {
 
         ledgerService.postPaymentCaptured(payment.getId(), payment.getAmountPaise(), payment.getCurrency());
         auditService.record("PAYMENT_CAPTURED", "Payment", payment.getId(),
-                "Captured via checkout verification: orderRef=" + order.getOrderReference()
-                        + ", amount=" + payment.getAmountPaise() + "p", "CHECKOUT");
+                                "Captured via checkout verification: orderRef=" + order.getOrderReference()
+                        + ", amount=" + payment.getAmountPaise() + "p"
+                        + (existing != null ? " (after an earlier failed attempt)" : ""), "CHECKOUT");
         evaluateRiskSafely(payment);
         return toPaymentResponse(payment);
     }
@@ -147,10 +149,12 @@ public class PaymentService {
      * Records a payment the gateway reports as captured: payment row, ledger, audit, risk, order status.
      * Idempotent. Used by the webhook and by reconciliation.
      */
-    @Transactional
+        @Transactional
     public void recordGatewayCapture(String razorpayPaymentId, String razorpayOrderId,
-                                    Map<String, Object> paymentData, String source) {
-        if (paymentRepository.existsByRazorpayPaymentId(razorpayPaymentId)) {
+                                     Map<String, Object> paymentData, String source) {
+        // Lock first (rule 8). A FAILED attempt is upgraded below; any other existing row means "already recorded".
+        Payment existing = lockByGatewayPaymentId(razorpayPaymentId).orElse(null);
+        if (existing != null && existing.getStatus() != PaymentStatus.FAILED) {
             log.info("Gateway capture: payment already recorded: {}", razorpayPaymentId);
             return;
         }
@@ -169,53 +173,106 @@ public class PaymentService {
                     "Gateway amount " + webhookAmount + " does not match order " + order.getOrderReference());
         }
 
-        Payment payment = Payment.builder()
-                .businessOrder(order)
-                .razorpayPaymentId(razorpayPaymentId)
-                .razorpayOrderId(razorpayOrderId)
-                .status(PaymentStatus.CAPTURED)
-                .amountPaise(getLong(paymentData, "amount"))
-                .currency(getString(paymentData, "currency", "INR"))
-                .method(getString(paymentData, "method", null))
-                .signatureVerified(false)  // webhook/reconciliation does not carry a payment signature
-                .build();
+        boolean upgradedFromFailed = existing != null;
+        Payment payment;
+        if (upgradedFromFailed) {
+            // The gateway captured a payment we had recorded as failed (late authorisation or a retry).
+            payment = upgradeFailedToCaptured(existing, paymentData, false);
+        } else {
+            payment = Payment.builder()
+                    .businessOrder(order)
+                    .razorpayPaymentId(razorpayPaymentId)
+                    .razorpayOrderId(razorpayOrderId)
+                    .status(PaymentStatus.CAPTURED)
+                    .amountPaise(webhookAmount)
+                    .currency(getString(paymentData, "currency", "INR"))
+                    .method(getString(paymentData, "method", null))
+                    .signatureVerified(false)  // webhook/reconciliation does not carry a payment signature
+                    .build();
+        }
 
-    payment = paymentRepository.save(payment);
-    ledgerService.postPaymentCaptured(payment.getId(), payment.getAmountPaise(), payment.getCurrency());
+        payment = paymentRepository.save(payment);
+        ledgerService.postPaymentCaptured(payment.getId(), payment.getAmountPaise(), payment.getCurrency());
 
-    auditService.record(
-            "PAYMENT_CAPTURED",
-            "Payment",
-            payment.getId(),
-            "Captured via " + source.toLowerCase() + ": orderRef=" + order.getOrderReference()
-                    + ", amount=" + payment.getAmountPaise() + "p",
-            source
-    );
+        auditService.record(
+                "PAYMENT_CAPTURED",
+                "Payment",
+                payment.getId(),
+                "Captured via " + source.toLowerCase() + ": orderRef=" + order.getOrderReference()
+                        + ", amount=" + payment.getAmountPaise() + "p"
+                        + (upgradedFromFailed ? " (after an earlier failed attempt)" : ""),
+                source
+        );
 
-    evaluateRiskSafely(payment);
+        evaluateRiskSafely(payment);
 
-    if (order.canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)) {
-        order.transitionTo(BusinessOrderStatus.PAYMENT_CAPTURED);
-        orderRepository.save(order);
+        if (order.canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)) {
+            order.transitionTo(BusinessOrderStatus.PAYMENT_CAPTURED);
+            orderRepository.save(order);
+        }
+
+        log.info("Gateway capture recorded: source={}, paymentId={}, upgradedFromFailed={}",
+                source, razorpayPaymentId, upgradedFromFailed);
     }
 
-    log.info("Gateway capture recorded: source={}, paymentId={}", source, razorpayPaymentId);
-}
-
-    /** Handle a payment failure via webhook. */
+        /**
+     * Handles a payment failure reported by the gateway (payment.failed webhook).
+     * Records the failed attempt (error details + audit) and fails the order if its state allows.
+     * A failed attempt never overwrites a payment we already hold: events can arrive out of order,
+     * and the gateway can capture a payment it first reported as failed.
+     */
     @Transactional
     public void handleWebhookFailure(String razorpayPaymentId, String razorpayOrderId,
-                                      Map<String, Object> paymentData) {
-        BusinessOrder order = orderRepository.findByRazorpayOrderId(razorpayOrderId)
-                .orElse(null);
-        if (order == null) return;
+                                     Map<String, Object> paymentData) {
+        if (razorpayPaymentId == null || razorpayPaymentId.isBlank()
+                || razorpayOrderId == null || razorpayOrderId.isBlank()) {
+            log.warn("payment.failed webhook without a payment id or order id: ignored");
+            return;
+        }
+        BusinessOrder order = orderRepository.findByRazorpayOrderId(razorpayOrderId).orElse(null);
+        if (order == null) {
+            log.warn("payment.failed webhook for an unknown order: razorpayOrderId={}", razorpayOrderId);
+            return;
+        }
 
-        // Only transition if not already in a terminal state
+        // Lock first (rule 8). Any payment we already hold (CAPTURED, or this same FAILED attempt) is left alone.
+        if (lockByGatewayPaymentId(razorpayPaymentId).isPresent()) {
+            log.info("payment.failed webhook: payment already recorded, left unchanged: {}", razorpayPaymentId);
+            return;
+        }
+
+        long amount = getLong(paymentData, "amount");
+        if (amount > 0) {
+            String currency = optionalText(paymentData, "currency", 3);
+            Payment failed = paymentRepository.save(Payment.builder()
+                    .businessOrder(order)
+                    .razorpayPaymentId(razorpayPaymentId)
+                    .razorpayOrderId(razorpayOrderId)
+                    .status(PaymentStatus.FAILED)
+                    .amountPaise(amount)
+                    .currency(currency != null ? currency : order.getCurrency())
+                    .method(optionalText(paymentData, "method", 30))
+                    .errorCode(optionalText(paymentData, "error_code", 100))
+                    .errorDescription(optionalText(paymentData, "error_description", 500))
+                    .errorSource(optionalText(paymentData, "error_source", 50))
+                    .errorStep(optionalText(paymentData, "error_step", 50))
+                    .errorReason(optionalText(paymentData, "error_reason", 100))
+                    .signatureVerified(false)  // the webhook HMAC covers the payload, as for captures
+                    .build());
+            auditService.record("PAYMENT_FAILED", "Payment", failed.getId(),
+                    "Failed attempt via webhook: orderRef=" + order.getOrderReference()
+                            + ", amount=" + amount + "p, reason=" + failed.getErrorReason(),
+                    "WEBHOOK");
+        } else {
+            log.warn("payment.failed webhook without a usable amount; attempt not recorded: {}", razorpayPaymentId);
+        }
+
+        // The order state machine decides: a captured or refunded order is never failed.
         if (order.canTransitionTo(BusinessOrderStatus.PAYMENT_FAILED)) {
             order.transitionTo(BusinessOrderStatus.PAYMENT_FAILED);
             orderRepository.save(order);
         }
-        log.info("Payment failed recorded via webhook: paymentId={}", razorpayPaymentId);
+        log.info("Payment failure recorded via webhook: paymentId={}", razorpayPaymentId);
     }
 
     /** Get payment by ID. */
@@ -251,7 +308,28 @@ public class PaymentService {
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
-
+    /** Finds the payment row for a gateway payment id and locks it. Id-only lookup first, so no stale copy is read before the lock. */
+    private Optional<Payment> lockByGatewayPaymentId(String razorpayPaymentId) {
+        return paymentRepository.findIdByRazorpayPaymentId(razorpayPaymentId)
+                .flatMap(paymentRepository::findByIdForUpdate);
+    }
+        /** Turns a FAILED attempt into a CAPTURED payment using the gateway's data, and clears the old error details. */
+    private Payment upgradeFailedToCaptured(Payment failed, Map<String, Object> data, boolean signatureVerified) {
+        failed.setStatus(PaymentStatus.CAPTURED);
+        failed.setAmountPaise(getLong(data, "amount"));
+        failed.setCurrency(getString(data, "currency", "INR"));
+        failed.setMethod(getString(data, "method", failed.getMethod()));
+        failed.setSignatureVerified(signatureVerified);
+        if (data.get("international") instanceof Boolean intl) {
+            failed.setInternational(intl);
+        }
+        failed.setErrorCode(null);
+        failed.setErrorDescription(null);
+        failed.setErrorSource(null);
+        failed.setErrorStep(null);
+        failed.setErrorReason(null);
+        return failed;
+    }
     private Payment buildPaymentFromRazorpayData(BusinessOrder order,
                                                    VerifyPaymentRequest request,
                                                    Map<String, Object> data) {
@@ -293,7 +371,18 @@ public class PaymentService {
                 p.getRazorpayCapturedAt()
         );
     }
-
+        /** Text from a gateway payload: null if missing, blank, or JSON null; cut to the column size. */
+    private String optionalText(Map<String, Object> map, String key, int maxLength) {
+        Object val = map.get(key);
+        if (val == null) {
+            return null;
+        }
+        String text = val.toString().trim();
+        if (text.isEmpty() || "null".equals(text)) {
+            return null;
+        }
+        return text.length() > maxLength ? text.substring(0, maxLength) : text;
+    }
     private Long getLong(Map<String, Object> map, String key) {
         Object val = map.get(key);
         if (val instanceof Long l) return l;

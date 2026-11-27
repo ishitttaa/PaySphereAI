@@ -41,40 +41,72 @@ public class SimulatorController {
                 .orElseGet(() -> ResponseEntity.badRequest()
                         .body(ApiResponse.failure("Unknown simulated order")));
     }
-        public record WebhookRequest(@NotBlank String eventType, String eventId,
-                                 String refundId, String paymentId, Long amountPaise) {}
+    public record WebhookRequest(@NotBlank String eventType, String eventId,
+                                 String refundId, String paymentId, Long amountPaise,
+                                 String razorpayOrderId) {}
 
-        /** Sends a correctly signed webhook to our own webhook handler: refund.processed or refund.failed. */
+    /**
+     * Sends a correctly signed webhook to our own webhook handler:
+     * refund.processed / refund.failed (needs refundId, paymentId, amountPaise) or
+     * payment.failed / payment.captured (needs paymentId, razorpayOrderId, amountPaise).
+     */
     @PostMapping("/webhook")
     public ResponseEntity<ApiResponse<Map<String, Object>>> webhook(@Valid @RequestBody WebhookRequest request) {
-        boolean supported = "refund.processed".equals(request.eventType())
-                || "refund.failed".equals(request.eventType());
-        if (!supported || request.refundId() == null || request.paymentId() == null
-                || request.amountPaise() == null || request.amountPaise() <= 0) {
+        String type = request.eventType();
+        boolean refundEvent = "refund.processed".equals(type) || "refund.failed".equals(type);
+        boolean paymentEvent = "payment.failed".equals(type) || "payment.captured".equals(type);
+        boolean valid = (refundEvent || paymentEvent)
+                && request.paymentId() != null
+                && request.amountPaise() != null && request.amountPaise() > 0
+                && (refundEvent ? request.refundId() != null : request.razorpayOrderId() != null);
+        if (!valid) {
             return ResponseEntity.badRequest().body(ApiResponse.failure(
-                    "Simulator supports eventType refund.processed or refund.failed, "
-                            + "with refundId, paymentId and amountPaise"));
+                    "Simulator supports refund.processed / refund.failed (refundId, paymentId, amountPaise) "
+                            + "and payment.failed / payment.captured (paymentId, razorpayOrderId, amountPaise)"));
         }
         String eventId = request.eventId() != null ? request.eventId()
                 : "evt_sim_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
 
-        JSONObject entity = new JSONObject()
-                .put("id", request.refundId())
-                .put("payment_id", request.paymentId())
-                .put("amount", request.amountPaise())
-                .put("currency", "INR")
-                .put("status", "refund.failed".equals(request.eventType()) ? "failed" : "processed");
+        JSONObject payload = new JSONObject();
+        if (refundEvent) {
+            JSONObject entity = new JSONObject()
+                    .put("id", request.refundId())
+                    .put("payment_id", request.paymentId())
+                    .put("amount", request.amountPaise())
+                    .put("currency", "INR")
+                    .put("status", "refund.failed".equals(type) ? "failed" : "processed");
+            payload.put("refund", new JSONObject().put("entity", entity));
+        } else {
+            boolean failed = "payment.failed".equals(type);
+            JSONObject entity = new JSONObject()
+                    .put("id", request.paymentId())
+                    .put("entity", "payment")
+                    .put("order_id", request.razorpayOrderId())
+                    .put("amount", request.amountPaise())
+                    .put("currency", "INR")
+                    .put("method", "card")
+                    .put("status", failed ? "failed" : "captured")
+                    .put("captured", !failed);
+            if (failed) {
+                entity.put("error_code", "BAD_REQUEST_ERROR")
+                        .put("error_description", "Simulated payment failure")
+                        .put("error_source", "bank")
+                        .put("error_step", "payment_authorization")
+                        .put("error_reason", "payment_failed");
+            }
+            payload.put("payment", new JSONObject().put("entity", entity));
+        }
         JSONObject body = new JSONObject()
                 .put("entity", "event")
-                .put("event", request.eventType())
+                .put("event", type)
                 .put("id", eventId)
-                .put("payload", new JSONObject().put("refund", new JSONObject().put("entity", entity)));
+                .put("payload", payload);
         String raw = body.toString();
 
         webhookService.processWebhook(raw, gateway.signWebhook(raw));
         return ResponseEntity.ok(ApiResponse.success(Map.of("eventId", eventId, "delivered", true)));
     }
-        public record RefundModeRequest(@NotBlank String mode) {}
+    public record RefundModeRequest(@NotBlank String mode) {}
 
     /** Makes the simulator's refund calls misbehave: NORMAL, TIMEOUT_AFTER_SUCCESS or TIMEOUT_NO_EFFECT. */
     @PostMapping("/refund-mode")

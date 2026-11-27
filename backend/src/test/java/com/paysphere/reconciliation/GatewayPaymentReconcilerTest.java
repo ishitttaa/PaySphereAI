@@ -1,5 +1,5 @@
 package com.paysphere.reconciliation;
-
+import com.paysphere.payment.entity.PaymentStatus;
 import com.paysphere.common.exception.BusinessException;
 import com.paysphere.gateway.GatewayException;
 import com.paysphere.gateway.PaymentGateway;
@@ -57,7 +57,7 @@ class GatewayPaymentReconcilerTest {
     private void oneUnpaidOrder() {
         when(queries.findRecentOrdersWithoutPayment(any(), anyInt()))
                 .thenReturn(List.of(new UnpaidOrder(orderId, "order_1", "ORD-1")));
-        when(paymentRepository.existsByRazorpayPaymentId("pay_1")).thenReturn(false);
+        when(paymentRepository.existsByRazorpayPaymentIdAndStatusNot("pay_1", PaymentStatus.FAILED)).thenReturn(false);
     }
 
     @Test
@@ -89,9 +89,10 @@ class GatewayPaymentReconcilerTest {
     void skipsAPaymentWeAlreadyHave() {
         when(queries.findRecentOrdersWithoutPayment(any(), anyInt()))
                 .thenReturn(List.of(new UnpaidOrder(orderId, "order_1", "ORD-1")));
+        // in skipsAPaymentWeAlreadyHave  (note: true)
         when(paymentGateway.fetchPaymentsForOrder("order_1"))
                 .thenReturn(List.of(gatewayPayment("pay_1", true, 30, 0)));
-        when(paymentRepository.existsByRazorpayPaymentId("pay_1")).thenReturn(true);
+        when(paymentRepository.existsByRazorpayPaymentIdAndStatusNot("pay_1", PaymentStatus.FAILED)).thenReturn(true);
 
         reconciler.reconcile(now);
 
@@ -186,10 +187,10 @@ class GatewayPaymentReconcilerTest {
                 new UnpaidOrder(orderId, "order_1", "ORD-1")));
         when(paymentGateway.fetchPaymentsForOrder("order_a"))
                 .thenThrow(GatewayException.fromHttpStatus(503, "unavailable"));
+        // in oneGatewayErrorDoesNotStopTheOtherOrders
         when(paymentGateway.fetchPaymentsForOrder("order_1"))
                 .thenReturn(List.of(gatewayPayment("pay_1", true, 30, 0)));
-        when(paymentRepository.existsByRazorpayPaymentId("pay_1")).thenReturn(false);
-
+        when(paymentRepository.existsByRazorpayPaymentIdAndStatusNot("pay_1", PaymentStatus.FAILED)).thenReturn(false);
         GatewayPaymentResult result = reconciler.reconcile(now);
 
         assertThat(result.outcomes()).containsEntry("ORDER_LOOKUP_ERROR", 1).containsEntry("RECORDED", 1);
