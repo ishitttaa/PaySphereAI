@@ -23,7 +23,6 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
 
     Optional<Payment> findByBusinessOrderIdAndStatus(UUID businessOrderId, PaymentStatus status);
 
-    boolean existsByRazorpayPaymentId(String razorpayPaymentId);
         /** True when we hold this gateway payment and it is NOT a failed attempt (money really moved). */
     boolean existsByRazorpayPaymentIdAndStatusNot(String razorpayPaymentId, PaymentStatus status);
 

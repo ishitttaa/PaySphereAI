@@ -112,15 +112,18 @@ public class ReconciliationQueries {
         public record UnpaidOrder(UUID id, String razorpayOrderId, String orderReference) {}
 
     public record RecentPayment(UUID id, String razorpayPaymentId, long amountPaise, String currency) {}
-
-    /** Recent orders that carry a gateway order id but have no payment row on our side. */
+    /**
+     * Recent orders that carry a gateway order id but have no payment of ours other than a FAILED attempt.
+     * A failed attempt does not count: the customer may have retried and paid.
+     */
     public List<UnpaidOrder> findRecentOrdersWithoutPayment(Instant createdAfter, int limit) {
         return jdbc.query("""
                 SELECT o.id, o.razorpay_order_id, o.order_reference FROM business_orders o
                 WHERE o.status IN ('PAYMENT_INITIATED', 'PAYMENT_EXPIRED', 'PAYMENT_FAILED')
                   AND o.razorpay_order_id IS NOT NULL
                   AND o.created_at > ?
-                  AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.business_order_id = o.id)
+                  AND NOT EXISTS (SELECT 1 FROM payments p
+                                  WHERE p.business_order_id = o.id AND p.status <> 'FAILED')
                 ORDER BY o.created_at DESC
                 LIMIT ?
                 """,

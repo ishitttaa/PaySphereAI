@@ -42,7 +42,7 @@ Where something was **not** verified, it says so. Last updated after **N11** (au
 
 ### A good first message from you
 
-> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and 148 tests pass. N7c (compare the gateway with our records) is done; the next planned step is N9 (multi-tenancy). Have you merged the last pull request, and is CI green on `main`?"
+> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and 168 tests pass. N3 (`payment.failed`) and N7c (gateway reconciliation) are done; the next planned step is N9 (multi-tenancy). Have you merged the last pull request, and is CI green on `main`?"
 
 ---
 
@@ -90,13 +90,14 @@ Everything after the gateway (signature checks, amount checks, ledger, audit, ri
 | Typed gateway errors (`GatewayException`) decide FAILED vs PENDING | Done (N6) | `GatewayExceptionTest`, `RefundServiceTest` |
 | Webhooks: failure persisted, HTTP 500, retried | Done | `WebhookServiceTest` |
 | `refund.processed` and `refund.failed` webhooks | Done (N2) | `WebhookServiceTest`, `RefundServiceTest`; signed simulator webhook |
+| `payment.failed` webhook records the failed attempt; a later capture of the same payment upgrades it | Done (N3) | `PaymentServiceTest`, `PaymentFailedWebhookIntegrationTest` |
 | Order expiry job; late payment on an expired order still recorded | Done (N1) | `OrderExpiryServiceTest`, `BusinessOrderTransitionTest`; owner-run: unpaid order expired, paid orders untouched, late payment captured |
 | JWT login, roles, BCrypt, admin bootstrap | Done | Tests; owner-run login |
 | Endpoint lockdown, deny by default, operator → 403 | Done (N4) | `HttpSecurityIntegrationTest` (real filter chain) |
 | Login rate limiting | Done | `LoginAttemptLimiterTest`; owner-run: 5 × 401 then 429 |
 | Nightly reconciliation of payments, refunds and the ledger | Done (N7a) | `ReconciliationServiceTest`, `ReconciliationIntegrationTest` |
 | Stuck `PENDING` refunds settled by asking the gateway | Done (N7b) | `RefundServiceTest`, `ReconciliationIntegrationTest`, simulator failure modes |
-| Comparing gateway payments with ours; finding paid-but-unrecorded payments | **Done (N7c)** — last 48 hours of orders, last 24 hours of payments, up to 200 per run | Tests; simulator “paid but never verified” flow |
+| Comparing gateway payments with ours; finding paid-but-unrecorded payments | **Done (N7c)** | Last 48 hours of orders, last 24 hours of payments, up to 200 per run |
 | CI (GitHub Actions) | Green | Build, full test suite, and a leak scan of text files |
 | Frontend | **Not production-safe** (friend's work) | See section 14 |
 | Multi-tenancy, API keys, merchant roles | **Not implemented** (N9) | |
@@ -207,7 +208,7 @@ Expected in the log: `PAYMENT SIMULATOR ACTIVE` (simulator mode), Flyway at the 
 mvn test
 ```
 
-Latest verified run: `Tests run: 148, Failures: 0, Errors: 0`. (Update this line if the suite changes.)
+Expected: `Tests run: 168, Failures: 0, Errors: 0`. (If your count differs after adding tests, update this line.)
 
 ---
 
@@ -287,7 +288,7 @@ All in one database transaction.
 | Event | Handling |
 |---|---|
 | `payment.captured` | Creates the payment (with an amount check; marked `signatureVerified = true` because the webhook HMAC covers the payload), posts ledger, audit, risk |
-| `payment.failed` | Updates the order status only |
+| `payment.failed` | Records the attempt as a `FAILED` payment (error code, reason, method), audits it, and fails the order if its state allows. Never overwrites a payment we already hold. A later capture of the same payment id upgrades the row to `CAPTURED` (ledger, audit, risk run then) |
 | `refund.created` | Logged only |
 | `refund.processed` | `RefundService.handleWebhookRefundProcessed` (below) |
 | `refund.failed` | `RefundService.handleWebhookRefundFailed` (below) |
@@ -346,7 +347,7 @@ Amounts are **integers in paise** (`long`). Never floating point.
 `SimulatedGateway` (only with `PAYMENT_GATEWAY=simulator`) plays the gateway:
 
 - `POST /simulator/pay` `{razorpayOrderId, outcome: SUCCESS|FAILURE, international?}` stands in for the checkout popup and returns a payment id and a real HMAC signature.
-- `POST /simulator/webhook` `{eventType: refund.processed|refund.failed, refundId, paymentId, amountPaise, eventId?}` sends a correctly signed webhook to our own handler (use the same `eventId` twice to test duplicate delivery).
+- `POST /simulator/webhook` `{eventType: payment.failed|payment.captured|refund.processed|refund.failed, paymentId, razorpayOrderId, amountPaise, refundId?, eventId?}` sends a correctly signed webhook to our own handler (use the same `eventId` twice to test duplicate delivery).
 - `POST /simulator/refund-mode` `{mode: NORMAL|TIMEOUT_AFTER_SUCCESS|TIMEOUT_NO_EFFECT}` makes refund calls misbehave: the refund happened but the reply "timed out", or the request "never arrived".
 - It lists refunds per payment for reconciliation, rejects a refund larger than the payment (like an HTTP 400), and **keeps everything in memory**: after an app restart it no longer knows old payments.
 
@@ -387,7 +388,8 @@ These are the project's invariants. Check every change against them.
 8. **Lock before read-modify-write** on shared money state (`findByIdForUpdate`), and **read the rows only after taking the lock**. Reading an entity first can leave a stale copy in the persistence context; use an id-only query to find the row to lock.
 9. **Write the audit entry in the same transaction as the money change** (`AuditService.record`, `Propagation.MANDATORY`).
 10. **A late payment must never be lost.** Expired orders can still become `PAYMENT_CAPTURED`; expiry never touches an order that has a payment.
-11. **A failed payment attempt does not end an order; a captured payment must always be recordable, even after a failure or expiry.**
+
+**Payment-attempt invariant:** A failed payment attempt does not end an order; a captured payment must always be recordable, even after a failure or expiry.
 
 ### Authentication and authorisation
 
@@ -422,7 +424,7 @@ These are the project's invariants. Check every change against them.
 
 ## 10. Testing and CI
 
-`mvn test` ran **148 tests** in the latest verified successful run:
+`mvn test` runs **168 tests**:
 
 | Kind | Classes |
 |---|---|
@@ -454,15 +456,16 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 11. **N2:** `refund.processed` and `refund.failed` webhooks, including external refunds and reversal of a booked refund; the shared `applyProcessedRefund`; simulator-signed webhooks.
 12. **N4:** HTTP-level security tests (every route × anonymous, operator, admin, bad tokens, CORS).
 13. **N5, N6:** refunds require an `Idempotency-Key` (`400` otherwise); typed `GatewayException` replaces error-text matching.
-14. **N7a, N7b, N7c:** nightly reconciliation of payments, refunds and the ledger; settlement of stuck `PENDING` refunds; gateway-payment comparison, including paid-but-unrecorded payments.
+14. **N7a, N7b:** nightly reconciliation of payments, refunds and the ledger, and settlement of stuck `PENDING` refunds against the gateway, with simulator failure modes.
 15. **N11:** audit trail records the real actor, IP and browser; logins, settlements and flag dismissals are audited; the risk-flag reviewer comes from the token, not the request body.
 16. **Zero-fee settlement fix:** `postSettlement` skips zero-amount entries (fees = 0, or fees = gross), with two new tests in `LedgerServiceTest`.
+17. **N3:** `payment.failed` webhook records failed attempts; captures upgrade a FAILED row (checkout, webhook and reconciliation); reconciliation still finds a paid retry after a failed attempt.
 
 ---
 
 ## 12. Known issues and technical debt
 
-- **Reconciliation scope limits (N7c):** gateway lookup is requested only for orders in `PAYMENT_INITIATED`, `PAYMENT_EXPIRED` or `PAYMENT_FAILED` that have a gateway order id. Unpaid orders older than 48 hours are not checked again.
+- **Reconciliation limits:** the gateway is queried only for orders with a gateway order id and status `PAYMENT_INITIATED`, `PAYMENT_EXPIRED`, or `PAYMENT_FAILED`. Unpaid orders older than 48 hours are not checked again. Gateway refunds we never recorded are picked up only through the `refund.processed` webhook. A payment with more than 100 refunds shows only the first 100 to reconciliation.
 - Reconciliation flags reuse the `risk_flags` table; thresholds (30 minutes, 5-minute grace) are constants, not settings.
 - `RazorpayAdapter.createOrder` and `fetchPayment` still wrap failures in a plain `RuntimeException`; only `createRefund` and `fetchRefundsForPayment` throw the typed `GatewayException`.
 - Order creation sends `X-Idempotency-Key`; it is **unverified** that Razorpay honours it for orders.
@@ -471,7 +474,8 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 - The client IP is `getRemoteAddr()` only. Behind a reverse proxy this is the proxy's address until a trusted-proxy setting is added.
 - The login rate limiter and the simulator keep state in memory (lost on restart, not shared between servers).
 - Settlements are entered manually by an admin; tax is not modelled; settlement currency is hardcoded to INR.
-- Payment method details (card, bank, wallet, VPA) are mostly not stored. The `payment.failed` webhook only updates the order status.
+- Payment method details (card, bank, wallet, VPA) are mostly not stored.
+- `WebhookService.processWebhook` carries `@Transactional`, which contradicts section 7.2 and rule 9.6: a failing event may roll back together with its `FAILED` `webhook_events` record. Prove it with an integration test, then fix on its own branch.
 - Redis runs in Docker but nothing uses it.
 - `spring.jpa.open-in-view` is on (warning in the log).
 - `mvnw.cmd` is broken and has an uncommitted local edit; do not commit it.
@@ -487,7 +491,6 @@ Each item lists an acceptance test. Keep the steps small, one branch each.
 
 **N9. Multi-tenancy** (required by the original project proposal). A `merchants` table, `merchant_id` on orders, payments, refunds, ledger and audit, a `MERCHANT_ADMIN` and merchant-operator model, hashed revocable API keys, and tenant-scoped queries and endpoints. **Security-critical:** write cross-tenant access tests first (merchant A must never read, refund or reconcile merchant B's data), and extend `HttpSecurityIntegrationTest`. This is the largest remaining change: touch one table family per step.
 
-**N3. `payment.failed` webhook.** Record the failed payment attempt properly.
 
 **N12. Observability.** Structured logs with correlation ids, metrics, and alerts for `FAILED` webhooks, old `PENDING` refunds, ledger imbalance and reconciliation findings.
 
@@ -559,7 +562,7 @@ Do not call the project production-ready until every box is ticked.
 - [ ] Database role without permission to drop triggers or alter the ledger
 - [ ] Rate limiting on every public endpoint, proxy-aware client IP
 - [ ] HTTPS and security headers; Swagger closed; actuator limited
-- [ ] Reconciliation running and **alerting** (N12), including gateway payment comparison
+- [ ] Reconciliation running and **alerting** (N12), including gateway payment comparison (N7c)
 - [ ] Backups tested; logs free of secrets and PII
 - [ ] Multi-tenant isolation tests passing (N9)
 - [ ] Dependency and secret scanning in CI (a dedicated scanner, not only the simple grep)
