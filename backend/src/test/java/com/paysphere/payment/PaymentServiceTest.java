@@ -20,7 +20,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.ArgumentCaptor;
-
+import com.paysphere.payment.entity.PaymentStatus;
+import java.util.UUID;
 import java.util.Map;
 import java.util.Optional;
 
@@ -28,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -100,5 +102,104 @@ class PaymentServiceTest {
         ArgumentCaptor<Payment> captor = ArgumentCaptor.forClass(Payment.class);
         verify(riskService).evaluatePayment(captor.capture());
         assertThat(captor.getValue().getInternational()).isTrue();
+    }
+    
+    @Test
+    @DisplayName("a gateway capture upgrades an earlier FAILED attempt instead of inserting a second row")
+    void captureUpgradesAFailedAttempt() {
+        UUID paymentId = UUID.randomUUID();
+        Payment failed = Payment.builder()
+                .id(paymentId)
+                .razorpayPaymentId("pay_late")
+                .razorpayOrderId("order_abc")
+                .status(PaymentStatus.FAILED)
+                .amountPaise(99900L)
+                .errorCode("BAD_REQUEST_ERROR")
+                .errorDescription("Payment failed")
+                .build();
+        BusinessOrder failedOrder = order();
+        failedOrder.setStatus(BusinessOrderStatus.PAYMENT_FAILED);
+        when(paymentRepository.findIdByRazorpayPaymentId("pay_late")).thenReturn(Optional.of(paymentId));
+        when(paymentRepository.findByIdForUpdate(paymentId)).thenReturn(Optional.of(failed));
+        when(orderRepository.findByRazorpayOrderId("order_abc")).thenReturn(Optional.of(failedOrder));
+        when(paymentRepository.save(any(Payment.class))).thenAnswer(i -> i.getArgument(0));
+
+        paymentService.recordGatewayCapture("pay_late", "order_abc",
+                Map.of("amount", 99900L, "currency", "INR", "method", "upi"), "WEBHOOK");
+
+        assertThat(failed.getStatus()).isEqualTo(PaymentStatus.CAPTURED);
+        assertThat(failed.getErrorCode()).isNull();
+        assertThat(failed.getMethod()).isEqualTo("upi");
+        assertThat(failedOrder.getStatus()).isEqualTo(BusinessOrderStatus.PAYMENT_CAPTURED);
+        verify(paymentRepository).save(failed);
+        verify(ledgerService).postPaymentCaptured(eq(paymentId), eq(99900L), eq("INR"));
+        verify(auditService).record(eq("PAYMENT_CAPTURED"), eq("Payment"), eq(paymentId),
+                contains("after an earlier failed attempt"), eq("WEBHOOK"));
+    }
+
+    @Test
+    @DisplayName("a gateway capture for a payment that is already CAPTURED changes nothing")
+    void captureLeavesACapturedPaymentAlone() {
+        UUID paymentId = UUID.randomUUID();
+        Payment captured = Payment.builder()
+                .id(paymentId)
+                .razorpayPaymentId("pay_done")
+                .razorpayOrderId("order_abc")
+                .status(PaymentStatus.CAPTURED)
+                .amountPaise(99900L)
+                .build();
+        when(paymentRepository.findIdByRazorpayPaymentId("pay_done")).thenReturn(Optional.of(paymentId));
+        when(paymentRepository.findByIdForUpdate(paymentId)).thenReturn(Optional.of(captured));
+
+        paymentService.recordGatewayCapture("pay_done", "order_abc",
+                Map.of("amount", 99900L, "currency", "INR"), "WEBHOOK");
+
+        assertThat(captured.getStatus()).isEqualTo(PaymentStatus.CAPTURED);
+        verify(paymentRepository, never()).save(any());
+        verifyNoInteractions(ledgerService, auditService, riskService);
+    }
+
+    @Test
+    @DisplayName("a gateway capture with no earlier row inserts a new CAPTURED payment")
+    void captureInsertsWhenThereIsNoRow() {
+        when(paymentRepository.findIdByRazorpayPaymentId("pay_new")).thenReturn(Optional.empty());
+        when(orderRepository.findByRazorpayOrderId("order_abc")).thenReturn(Optional.of(order()));
+        when(paymentRepository.save(any(Payment.class))).thenAnswer(i -> i.getArgument(0));
+
+        paymentService.recordGatewayCapture("pay_new", "order_abc",
+                Map.of("amount", 99900L, "currency", "INR"), "RECONCILIATION");
+
+        ArgumentCaptor<Payment> saved = ArgumentCaptor.forClass(Payment.class);
+        verify(paymentRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(PaymentStatus.CAPTURED);
+        assertThat(saved.getValue().getRazorpayPaymentId()).isEqualTo("pay_new");
+        verify(paymentRepository, never()).findByIdForUpdate(any());
+        verify(ledgerService).postPaymentCaptured(any(), eq(99900L), eq("INR"));
+    }
+
+    @Test
+    @DisplayName("a capture with the wrong amount is rejected and the FAILED row stays FAILED")
+    void captureWithWrongAmountLeavesTheFailedRowAlone() {
+        UUID paymentId = UUID.randomUUID();
+        Payment failed = Payment.builder()
+                .id(paymentId)
+                .razorpayPaymentId("pay_late")
+                .razorpayOrderId("order_abc")
+                .status(PaymentStatus.FAILED)
+                .amountPaise(99900L)
+                .errorCode("BAD_REQUEST_ERROR")
+                .build();
+        when(paymentRepository.findIdByRazorpayPaymentId("pay_late")).thenReturn(Optional.of(paymentId));
+        when(paymentRepository.findByIdForUpdate(paymentId)).thenReturn(Optional.of(failed));
+        when(orderRepository.findByRazorpayOrderId("order_abc")).thenReturn(Optional.of(order()));
+
+        assertThatThrownBy(() -> paymentService.recordGatewayCapture("pay_late", "order_abc",
+                Map.of("amount", 100L, "currency", "INR"), "WEBHOOK"))
+                .isInstanceOf(BusinessException.class);
+
+        assertThat(failed.getStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(failed.getErrorCode()).isEqualTo("BAD_REQUEST_ERROR");
+        verify(paymentRepository, never()).save(any());
+        verifyNoInteractions(ledgerService);
     }
 }
