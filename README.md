@@ -9,7 +9,7 @@ This file serves two readers:
 2. **An AI assistant** that is taking over the work. Section 0 is written for you.
 
 Everything below is based on the actual code and on checks that were run, not on wishes.
-Where something was **not** verified, it says so. Last updated after step **N11** (audit identity).
+Where something was **not** verified, it says so. Last updated after **N11** (audit identity) and the zero-fee settlement fix.
 
 ---
 
@@ -42,7 +42,7 @@ Where something was **not** verified, it says so. Last updated after step **N11*
 
 ### A good first message from you
 
-> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and 131 tests pass. The next planned step is N7c (compare the gateway with our records). Have you merged the last pull request, and is CI green on `main`?"
+> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and 133 tests pass. The next planned step is N7c (compare the gateway with our records). Have you merged the last pull request, and is CI green on `main`?"
 
 ---
 
@@ -207,7 +207,7 @@ Expected in the log: `PAYMENT SIMULATOR ACTIVE` (simulator mode), Flyway at the 
 mvn test
 ```
 
-Expected: `Tests run: 131, Failures: 0, Errors: 0`. (If your count differs after adding tests, update this line.)
+Expected: `Tests run: 133, Failures: 0, Errors: 0`. (If your count differs after adding tests, update this line.)
 
 ---
 
@@ -328,6 +328,7 @@ Amounts are **integers in paise** (`long`). Never floating point.
 - `validateBalance` rejects unbalanced entries before saving.
 - Entries are **never edited or deleted**. Mistakes are fixed with a new, opposite posting. Database triggers (V6) enforce this.
 - Only money that actually moved is posted. Pending, failed or abandoned payments never touch the ledger.
+- A settlement posts the `MERCHANT_BANK` entry only when net > 0 and the `RAZORPAY_FEES` entry only when fees > 0, because the database rejects zero-amount entries.
 - `REFUNDS_PAYABLE` is seeded but unused.
 
 ### 7.5 Order expiry and reconciliation
@@ -420,7 +421,7 @@ These are the project's invariants. Check every change against them.
 
 ## 10. Testing and CI
 
-`mvn test` runs **131 tests**:
+`mvn test` runs **133 tests**:
 
 | Kind | Classes |
 |---|---|
@@ -454,12 +455,12 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 13. **N5, N6:** refunds require an `Idempotency-Key` (`400` otherwise); typed `GatewayException` replaces error-text matching.
 14. **N7a, N7b:** nightly reconciliation of payments, refunds and the ledger, and settlement of stuck `PENDING` refunds against the gateway, with simulator failure modes.
 15. **N11:** audit trail records the real actor, IP and browser; logins, settlements and flag dismissals are audited; the risk-flag reviewer comes from the token, not the request body.
+16. **Zero-fee settlement fix:** `postSettlement` skips zero-amount entries (fees = 0, or fees = gross), with two new tests in `LedgerServiceTest`.
 
 ---
 
 ## 12. Known issues and technical debt
 
-- **Settlement with `feesPaise = 0` fails:** `LedgerService.postSettlement` writes a zero-amount fee entry, which the database rejects, so the API answers 500. Post the fee entry only when fees are greater than 0.
 - **Reconciliation gaps** (N7c): only payments that have a stale `PENDING` refund are compared with the gateway. A payment the customer made at the gateway that never reached us (no verify call, no webhook) is **not** detected. Gateway refunds we never recorded are picked up only through the `refund.processed` webhook. A payment with more than 100 refunds shows only the first 100 to reconciliation.
 - Reconciliation flags reuse the `risk_flags` table; thresholds (30 minutes, 5-minute grace) are constants, not settings.
 - `RazorpayAdapter.createOrder` and `fetchPayment` still wrap failures in a plain `RuntimeException`; only `createRefund` and `fetchRefundsForPayment` throw the typed `GatewayException`.
@@ -529,6 +530,7 @@ The frontend is **not safe to demo as real** yet:
 ## 15. Pitfalls already hit (avoid repeating)
 
 - **Editing or running commands in the wrong folder** (outer vs nested). `not a git repository` is the tell-tale.
+- **Running `mvn` from the repo root.** `pom.xml` is in `backend/`; from the root Maven says "no POM in this directory".
 - **Unsaved edits** reported as "the fix didn't work".
 - **Pasting commands or script text into the wrong place**, or many commands at once; the screen overlaps and the output cannot be trusted. Paste one block at a time, and read the prompt first.
 - **A new terminal has no variables.** `.env` values, `$base`, `$token` from another terminal do not exist; empty variables silently turn into broken URLs or `-U -d` style errors. Run `. .\scripts\load-env.ps1` and define variables again in each terminal.
@@ -543,6 +545,7 @@ The frontend is **not safe to demo as real** yet:
 - **An IDE extension rewriting the project** (Copilot app modernization); see 3.2.
 - **A leak scan that matched our own safety code** (compiled `.class` files contain the text `rzp_live_`). Scan text files for key-shaped strings only.
 - **Unit tests cannot catch SQL or JPQL mistakes**; the integration tests do.
+- **A test run that passes can still be the wrong run.** After adding tests, check the count (`Tests run: 7`, not 5) before trusting "BUILD SUCCESS".
 
 ---
 
