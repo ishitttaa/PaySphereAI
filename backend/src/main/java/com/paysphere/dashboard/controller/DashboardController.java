@@ -4,15 +4,11 @@ import com.paysphere.common.response.ApiResponse;
 import com.paysphere.ledger.repository.LedgerTransactionRepository;
 import com.paysphere.order.entity.BusinessOrderStatus;
 import com.paysphere.order.repository.BusinessOrderRepository;
-import com.paysphere.payment.entity.Payment;
 import com.paysphere.payment.entity.PaymentStatus;
 import com.paysphere.payment.repository.PaymentRepository;
-import com.paysphere.refund.entity.Refund;
-import com.paysphere.refund.entity.RefundStatus;
 import com.paysphere.refund.repository.RefundRepository;
 import com.paysphere.risk.entity.RiskFlagStatus;
 import com.paysphere.risk.repository.RiskFlagRepository;
-import com.paysphere.settlement.entity.Settlement;
 import com.paysphere.settlement.repository.SettlementRepository;
 import com.paysphere.webhook.repository.WebhookEventRepository;
 import io.swagger.v3.oas.annotations.Operation;
@@ -24,8 +20,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.List;
 
 @Slf4j
 @RestController
@@ -44,8 +38,9 @@ public class DashboardController {
 
     @Builder
     public record DashboardStatsResponse(
-            long totalRevenuePaise,
-            double totalRevenueRupees,
+            long grossRevenuePaise,
+            long totalRevenuePaise,          // NET: gross minus processed refunds
+            double totalRevenueRupees,       // display only, derived from net
             long successfulPaymentsCount,
             long failedPaymentsCount,
             long totalOrdersCount,
@@ -58,50 +53,38 @@ public class DashboardController {
             long ledgerTransactionsCount
     ) {}
 
-    @Operation(summary = "Get aggregated real-time dashboard KPIs and counts")
+    private static long nz(Long value) {
+        return value == null ? 0L : value;
+    }
+
+    @Operation(summary = "Get aggregated dashboard KPIs (all sums computed in the database)")
     @GetMapping("/stats")
     public ResponseEntity<ApiResponse<DashboardStatsResponse>> getStats() {
-        List<Payment> allPayments = paymentRepository.findAll();
-        long grossRevenue = allPayments.stream()
-                .filter(p -> p.getStatus() == PaymentStatus.CAPTURED)
-                .mapToLong(p -> p.getAmountPaise() != null ? p.getAmountPaise() : 0L)
-                .sum();
+        long gross = nz(paymentRepository.sumCapturedAmountPaise());
+        long refunded = nz(refundRepository.sumProcessedAmountPaise());
+        long net = gross - refunded;
 
-        long successPayments = paymentRepository.countByStatus(PaymentStatus.CAPTURED);
+        long successPayments = paymentRepository.countByStatus(PaymentStatus.CAPTURED)
+                + paymentRepository.countByStatus(PaymentStatus.REFUNDED);
         long failedPayments = paymentRepository.countByStatus(PaymentStatus.FAILED);
 
-        long totalOrders = orderRepository.count();
         long pendingOrders = orderRepository.countByStatus(BusinessOrderStatus.PENDING)
                 + orderRepository.countByStatus(BusinessOrderStatus.PAYMENT_INITIATED);
 
-        List<Refund> allRefunds = refundRepository.findAll();
-        long refundedPaise = allRefunds.stream()
-                .filter(r -> r.getStatus() == RefundStatus.PROCESSED)
-                .mapToLong(r -> r.getAmountPaise() != null ? r.getAmountPaise() : 0L)
-                .sum();
-
-        List<Settlement> allSettlements = settlementRepository.findAll();
-        long settledPaise = allSettlements.stream()
-                .mapToLong(s -> s.getAmountPaise() != null ? s.getAmountPaise() : 0L)
-                .sum();
-
-        long openRisk = riskFlagRepository.countByStatus(RiskFlagStatus.OPEN);
-        long webhookEvents = webhookEventRepository.count();
-        long ledgerTxs = ledgerTransactionRepository.count();
-
         DashboardStatsResponse stats = DashboardStatsResponse.builder()
-                .totalRevenuePaise(grossRevenue)
-                .totalRevenueRupees(grossRevenue / 100.0)
+                .grossRevenuePaise(gross)
+                .totalRevenuePaise(net)
+                .totalRevenueRupees(net / 100.0)
                 .successfulPaymentsCount(successPayments)
                 .failedPaymentsCount(failedPayments)
-                .totalOrdersCount(totalOrders)
+                .totalOrdersCount(orderRepository.count())
                 .pendingOrdersCount(pendingOrders)
-                .refundedAmountPaise(refundedPaise)
-                .refundsCount(allRefunds.size())
-                .settledAmountPaise(settledPaise)
-                .openRiskFlagsCount(openRisk)
-                .webhookEventsCount(webhookEvents)
-                .ledgerTransactionsCount(ledgerTxs)
+                .refundedAmountPaise(refunded)
+                .refundsCount(refundRepository.count())
+                .settledAmountPaise(nz(settlementRepository.sumAmountPaise()))
+                .openRiskFlagsCount(riskFlagRepository.countByStatus(RiskFlagStatus.OPEN))
+                .webhookEventsCount(webhookEventRepository.count())
+                .ledgerTransactionsCount(ledgerTransactionRepository.count())
                 .build();
 
         return ResponseEntity.ok(ApiResponse.success(stats));

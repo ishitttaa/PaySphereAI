@@ -28,4 +28,9 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
             + "where r.status = com.paysphere.refund.entity.RefundStatus.PENDING "
             + "and r.createdAt < :cutoff order by r.createdAt")
     List<UUID> findStalePendingIds(@Param("cutoff") Instant cutoff);
+
+    /** Total of refunds the gateway has really processed. Summed in the database. */
+    @Query("select coalesce(sum(r.amountPaise), 0) from Refund r "
+            + "where r.status = com.paysphere.refund.entity.RefundStatus.PROCESSED")
+    Long sumProcessedAmountPaise();
 }

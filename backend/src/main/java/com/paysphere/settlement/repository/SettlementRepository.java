@@ -6,6 +6,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
+import org.springframework.data.jpa.repository.Query;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -16,4 +17,7 @@ public interface SettlementRepository extends JpaRepository<Settlement, UUID> {
     boolean existsByRazorpaySettlementId(String razorpaySettlementId);
     Page<Settlement> findByStatusOrderByCreatedAtDesc(SettlementStatus status, Pageable pageable);
     Page<Settlement> findAllByOrderByCreatedAtDesc(Pageable pageable);
+
+    @Query("select coalesce(sum(s.amountPaise), 0) from Settlement s")
+    Long sumAmountPaise();
 }
