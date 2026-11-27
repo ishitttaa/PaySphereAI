@@ -33,6 +33,13 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     Optional<UUID> findIdByRazorpayPaymentId(@Param("razorpayPaymentId") String razorpayPaymentId);
 
     long countByStatus(PaymentStatus status);
+
+    /** Money that was ever captured: CAPTURED plus fully REFUNDED payments. Summed in the database. */
+    @Query("select coalesce(sum(p.amountPaise), 0) from Payment p "
+            + "where p.status in (com.paysphere.payment.entity.PaymentStatus.CAPTURED, "
+            + "                   com.paysphere.payment.entity.PaymentStatus.REFUNDED)")
+    Long sumCapturedAmountPaise();
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from Payment p where p.id = :id")
     Optional<Payment> findByIdForUpdate(@Param("id") UUID id);
