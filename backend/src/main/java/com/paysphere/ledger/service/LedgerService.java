@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.ArrayList;
 
 /**
  * LedgerService — Posts double-entry journal entries for financial events.
@@ -173,8 +174,9 @@ public class LedgerService {
      */
     @Transactional
     public void postSettlement(UUID settlementId, long grossPaise, long feesPaise, String currency) {
-    if (grossPaise <= 0 || feesPaise < 0 || feesPaise > grossPaise)
-       throw new IllegalArgumentException("Invalid settlement amounts");
+        if (grossPaise <= 0 || feesPaise < 0 || feesPaise > grossPaise) {
+            throw new IllegalArgumentException("Invalid settlement amounts");
+        }
         String idempotencyKey = "SETTLEMENT-" + settlementId;
         if (txRepo.existsByIdempotencyKey(idempotencyKey)) {
             log.info("Ledger: settlement already posted, skipping: {}", settlementId);
@@ -183,8 +185,6 @@ public class LedgerService {
 
         long netPaise = grossPaise - feesPaise;
 
-        LedgerAccount merchantBank  = getAccount("MERCHANT_BANK");
-        LedgerAccount fees          = getAccount("RAZORPAY_FEES");
         LedgerAccount receivable    = getAccount("RAZORPAY_RECEIVABLE");
 
         LedgerTransaction tx = LedgerTransaction.builder()
@@ -197,17 +197,20 @@ public class LedgerService {
                 .postedAt(Instant.now())
                 .build();
 
-        // DR Merchant Bank (net received)
-        // DR Razorpay Fees (fees paid)
+        // DR Merchant Bank (net received)  - only if net > 0
+        // DR Razorpay Fees (fees paid)     - only if fees > 0 (the DB rejects zero-amount entries)
         // CR Razorpay Receivable (gross settled)
-        List<LedgerEntry> entries = List.of(
-            buildEntry(tx, merchantBank, EntryType.DEBIT,  netPaise,   currency,
-                       "Net settlement received in bank"),
-            buildEntry(tx, fees,         EntryType.DEBIT,  feesPaise,  currency,
-                       "Razorpay gateway fees deducted"),
-            buildEntry(tx, receivable,   EntryType.CREDIT, grossPaise, currency,
-                       "Settlement clears receivable")
-        );
+        List<LedgerEntry> entries = new ArrayList<>();
+        if (netPaise > 0) {
+            entries.add(buildEntry(tx, getAccount("MERCHANT_BANK"), EntryType.DEBIT, netPaise, currency,
+                    "Net settlement received in bank"));
+        }
+        if (feesPaise > 0) {
+            entries.add(buildEntry(tx, getAccount("RAZORPAY_FEES"), EntryType.DEBIT, feesPaise, currency,
+                    "Razorpay gateway fees deducted"));
+        }
+        entries.add(buildEntry(tx, receivable, EntryType.CREDIT, grossPaise, currency,
+                "Settlement clears receivable"));
 
         validateBalance(entries);
         tx.getEntries().addAll(entries);

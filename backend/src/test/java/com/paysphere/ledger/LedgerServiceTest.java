@@ -117,6 +117,42 @@ class LedgerServiceTest {
         assertThat(debits).isEqualTo(credits);
         assertThat(debits).isEqualTo(10000L);
     }
+
+    @Test
+    @DisplayName("postSettlement with zero fees posts no fee entry (the database rejects zero-amount entries)")
+    void testPostSettlementZeroFees() {
+        UUID settlementId = UUID.randomUUID();
+        when(txRepo.existsByIdempotencyKey("SETTLEMENT-" + settlementId)).thenReturn(false);
+        when(accountRepo.findByCode("MERCHANT_BANK")).thenReturn(Optional.of(merchantBank));
+        when(accountRepo.findByCode("RAZORPAY_RECEIVABLE")).thenReturn(Optional.of(receivable));
+
+        ledgerService.postSettlement(settlementId, 10000L, 0L, "INR");
+
+        ArgumentCaptor<LedgerTransaction> captor = ArgumentCaptor.forClass(LedgerTransaction.class);
+        verify(txRepo).save(captor.capture());
+        LedgerTransaction savedTx = captor.getValue();
+        assertThat(savedTx.getEntries()).hasSize(2);
+        assertThat(savedTx.getEntries()).allSatisfy(e -> assertThat(e.getAmountPaise()).isPositive());
+        verify(accountRepo, never()).findByCode("RAZORPAY_FEES");
+    }
+
+    @Test
+    @DisplayName("postSettlement where fees equal gross posts no zero-amount bank entry")
+    void testPostSettlementFeesEqualGross() {
+        UUID settlementId = UUID.randomUUID();
+        when(txRepo.existsByIdempotencyKey("SETTLEMENT-" + settlementId)).thenReturn(false);
+        when(accountRepo.findByCode("RAZORPAY_FEES")).thenReturn(Optional.of(fees));
+        when(accountRepo.findByCode("RAZORPAY_RECEIVABLE")).thenReturn(Optional.of(receivable));
+
+        ledgerService.postSettlement(settlementId, 10000L, 10000L, "INR");
+
+        ArgumentCaptor<LedgerTransaction> captor = ArgumentCaptor.forClass(LedgerTransaction.class);
+        verify(txRepo).save(captor.capture());
+        assertThat(captor.getValue().getEntries()).hasSize(2);
+        assertThat(captor.getValue().getEntries()).allSatisfy(e -> assertThat(e.getAmountPaise()).isPositive());
+        verify(accountRepo, never()).findByCode("MERCHANT_BANK");
+    }
+
     @Test
     @DisplayName("postRefundReversal posts the opposite of a refund: debit receivable, credit revenue")
     void testPostRefundReversal() {
