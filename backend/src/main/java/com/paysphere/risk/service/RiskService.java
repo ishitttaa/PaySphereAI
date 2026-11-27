@@ -11,7 +11,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import com.paysphere.audit.service.AuditService;
+import com.paysphere.user.repository.UserRepository;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -36,7 +38,8 @@ import java.util.UUID;
 public class RiskService {
 
     private final RiskFlagRepository riskFlagRepository;
-
+    private final UserRepository userRepository;
+    private final AuditService auditService;
     // Threshold: flag payments above Rs 50,000 (5,000,000 paise)
     private static final long HIGH_AMOUNT_THRESHOLD_PAISE = 5_000_000L;
 
@@ -85,14 +88,20 @@ public class RiskService {
     }
 
     /** Dismiss a risk flag after review. */
+        /** Dismiss a risk flag after review. The reviewer comes from the login token, never the request body. */
     @Transactional
     public void dismissFlag(UUID flagId, UUID reviewerUserId, String notes) {
         RiskFlag flag = riskFlagRepository.findById(flagId)
                 .orElseThrow(() -> new IllegalArgumentException("Risk flag not found: " + flagId));
         flag.setStatus(RiskFlagStatus.DISMISSED);
-        flag.setReviewedBy(reviewerUserId);
-        flag.setReviewNotes(notes);
+        // reviewed_by is a foreign key to users: only store an id that really exists.
+        flag.setReviewedBy(reviewerUserId != null && userRepository.existsById(reviewerUserId)
+                ? reviewerUserId : null);
+        flag.setReviewedAt(Instant.now());
+        flag.setReviewNotes(notes == null ? null : (notes.length() > 500 ? notes.substring(0, 500) : notes));
         riskFlagRepository.save(flag);
+        auditService.record("RISK_FLAG_DISMISSED", "RiskFlag", flag.getId(),
+                "Rule " + flag.getRuleCode() + " on " + flag.getEntityType() + " " + flag.getEntityId(), "API");
     }
 
     private void raiseFlag(UUID entityId, String entityType,

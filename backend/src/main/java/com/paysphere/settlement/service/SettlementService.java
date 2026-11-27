@@ -1,5 +1,6 @@
 package com.paysphere.settlement.service;
 
+import com.paysphere.audit.service.AuditService;
 import com.paysphere.ledger.service.LedgerService;
 import com.paysphere.settlement.entity.Settlement;
 import com.paysphere.settlement.entity.SettlementStatus;
@@ -30,7 +31,7 @@ public class SettlementService {
 
     private final SettlementRepository settlementRepository;
     private final LedgerService ledgerService;
-
+    private final AuditService auditService;
     /**
      * Record a settlement from Razorpay. Idempotent.
      */
@@ -56,7 +57,9 @@ public class SettlementService {
 
         // Post ledger entries
         ledgerService.postSettlement(settlement.getId(), amountPaise, feesPaise, "INR");
-
+        auditService.record("SETTLEMENT_RECORDED", "Settlement", settlement.getId(),
+                "Settlement " + razorpaySettlementId + ": gross " + amountPaise + "p, fees "
+                        + feesPaise + "p, UTR " + utr, "API");
         log.info("Settlement recorded: id={}, razorpayId={}, amount={}p, fees={}p, utr={}",
                 settlement.getId(), razorpaySettlementId, amountPaise, feesPaise, utr);
 

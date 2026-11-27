@@ -41,9 +41,10 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 List<?> roles = claims.get("roles", List.class);
                 List<SimpleGrantedAuthority> authorities = roles == null ? List.of()
                         : roles.stream().map(r -> new SimpleGrantedAuthority("ROLE_" + r)).toList();
-                SecurityContextHolder.getContext().setAuthentication(
-                        new UsernamePasswordAuthenticationToken(
-                                claims.get("email", String.class), null, authorities));
+                UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                        claims.get("email", String.class), null, authorities);
+                authentication.setDetails(claims.getSubject());   // the user id, read by CurrentUser.id()
+                SecurityContextHolder.getContext().setAuthentication(authentication);
             } catch (JwtException | IllegalArgumentException e) {
                 log.debug("Rejected bearer token: {}", e.getClass().getSimpleName());
             }

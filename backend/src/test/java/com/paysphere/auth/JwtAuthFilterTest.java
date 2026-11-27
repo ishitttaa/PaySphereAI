@@ -62,4 +62,11 @@ class JwtAuthFilterTest {
         String expired = new JwtService(SECRET, -60).createToken(UUID.randomUUID(), "a@b.com", List.of("PLATFORM_ADMIN"));
         assertThat(run("Bearer " + expired)).isNull();
     }
+        @Test
+    void theUserIdFromTheTokenIsAvailableAsDetails() throws Exception {
+        UUID id = UUID.randomUUID();
+        Authentication auth = run("Bearer " + jwt.createToken(id, "a@b.com", List.of("PLATFORM_ADMIN")));
+
+        assertThat(auth.getDetails()).isEqualTo(id.toString());
+    }
 }

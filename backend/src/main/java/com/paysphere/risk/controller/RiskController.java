@@ -13,6 +13,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import com.paysphere.security.CurrentUser;
 
 import java.util.List;
 import java.util.UUID;
@@ -48,14 +49,14 @@ public class RiskController {
         List<RiskFlag> flags = riskService.getFlagsForEntity(entityType, entityId);
         return ResponseEntity.ok(ApiResponse.success(flags));
     }
-
+ // reviewerUserId is ignored: a caller must not be able to name someone else as the reviewer.
     @Operation(summary = "Dismiss / resolve a risk flag after admin review")
     @PostMapping("/{flagId}/dismiss")
     public ResponseEntity<ApiResponse<Void>> dismissFlag(
             @PathVariable UUID flagId,
             @RequestBody(required = false) DismissFlagRequest request
     ) {
-        UUID reviewer = request != null ? request.reviewerUserId() : null;
+        UUID reviewer = CurrentUser.id().orElse(null);   // from the login token; the body's reviewerUserId is ignored
         String notes = request != null && request.notes() != null ? request.notes() : "Dismissed by admin";
         riskService.dismissFlag(flagId, reviewer, notes);
         return ResponseEntity.ok(ApiResponse.success(null));
