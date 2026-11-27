@@ -1,5 +1,6 @@
 package com.paysphere.auth;
 
+import com.paysphere.audit.service.AuditService;
 import com.paysphere.common.response.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -19,7 +20,7 @@ public class AuthController {
 
     private static final int MAX_FAILURES_PER_IP_AND_EMAIL = 5;
     private static final int MAX_FAILURES_PER_IP = 20;
-
+    private final AuditService auditService;
     private final AuthService authService;
     private final LoginAttemptLimiter limiter;
 
@@ -28,6 +29,7 @@ public class AuthController {
             @Valid @RequestBody LoginRequest request, HttpServletRequest http) {
 
         String ip = http.getRemoteAddr();
+        String userAgent = http.getHeader("User-Agent");
         String email = request.email().trim().toLowerCase();
         String ipKey = "ip:" + ip;
         String pairKey = "pair:" + ip + "|" + email;
@@ -42,10 +44,12 @@ public class AuthController {
         try {
             LoginResponse response = authService.login(request.email(), request.password());
             limiter.recordSuccess(pairKey);
+            auditService.logAuthEvent("LOGIN_SUCCESS", email, ip, userAgent);
             return ResponseEntity.ok(ApiResponse.success(response));
         } catch (BadCredentialsException e) {
             limiter.recordFailure(ipKey);
             limiter.recordFailure(pairKey);
+            auditService.logAuthEvent("LOGIN_FAILED", email, ip, userAgent);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(ApiResponse.failure("Invalid email or password"));
         }
