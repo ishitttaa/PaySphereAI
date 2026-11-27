@@ -42,8 +42,10 @@ class BusinessOrderTransitionTest {
     }
 
     @Test
-    void failedOrdersStayFailed() {
+    void aFailedAttemptDoesNotEndTheOrder() {
         assertThat(order(BusinessOrderStatus.PAYMENT_FAILED)
-                .canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)).isFalse();
+                .canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)).isTrue();   // the customer retries and pays
+        assertThat(order(BusinessOrderStatus.PAYMENT_FAILED)
+                .canTransitionTo(BusinessOrderStatus.REFUNDED)).isFalse();
     }
 }

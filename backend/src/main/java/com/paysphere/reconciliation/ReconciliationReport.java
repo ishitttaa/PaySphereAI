@@ -6,5 +6,6 @@ import java.util.Map;
 
 public record ReconciliationReport(Instant ranAt, int problemsFound, int newFlags,
                                    Map<String, Integer> refundsSettled,
+                                   Map<String, Integer> gatewayPayments,
                                    List<ReconciliationFinding> findings) {
 }

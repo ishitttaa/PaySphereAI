@@ -136,11 +136,22 @@ public class PaymentService {
      * Called by WebhookService when a payment.captured event arrives.
      * Idempotent — safe to call multiple times with the same payment ID.
      */
+        /** Called by the webhook handler. */
     @Transactional
     public void handleWebhookCapture(String razorpayPaymentId, String razorpayOrderId,
-                                      Map<String, Object> paymentData) {
+                                    Map<String, Object> paymentData) {
+        recordGatewayCapture(razorpayPaymentId, razorpayOrderId, paymentData, "WEBHOOK");
+    }
+
+    /**
+     * Records a payment the gateway reports as captured: payment row, ledger, audit, risk, order status.
+     * Idempotent. Used by the webhook and by reconciliation.
+     */
+    @Transactional
+    public void recordGatewayCapture(String razorpayPaymentId, String razorpayOrderId,
+                                    Map<String, Object> paymentData, String source) {
         if (paymentRepository.existsByRazorpayPaymentId(razorpayPaymentId)) {
-            log.info("Webhook: payment already recorded: {}", razorpayPaymentId);
+            log.info("Gateway capture: payment already recorded: {}", razorpayPaymentId);
             return;
         }
 
@@ -148,14 +159,16 @@ public class PaymentService {
                 .orElse(null);
 
         if (order == null) {
-            log.warn("Webhook: no order found for razorpayOrderId={}", razorpayOrderId);
+            log.warn("Gateway capture: no order found for razorpayOrderId={}", razorpayOrderId);
             return;
         }
+
         long webhookAmount = getLong(paymentData, "amount");
         if (order.getAmountPaise() == null || webhookAmount != order.getAmountPaise()) {
             throw new BusinessException("AMOUNT_MISMATCH",
-                    "Webhook amount " + webhookAmount + " does not match order " + order.getOrderReference());
+                    "Gateway amount " + webhookAmount + " does not match order " + order.getOrderReference());
         }
+
         Payment payment = Payment.builder()
                 .businessOrder(order)
                 .razorpayPaymentId(razorpayPaymentId)
@@ -164,22 +177,30 @@ public class PaymentService {
                 .amountPaise(getLong(paymentData, "amount"))
                 .currency(getString(paymentData, "currency", "INR"))
                 .method(getString(paymentData, "method", null))
-                .signatureVerified(false)  // webhook doesn't carry payment signature
+                .signatureVerified(false)  // webhook/reconciliation does not carry a payment signature
                 .build();
 
-        payment=paymentRepository.save(payment);
-        ledgerService.postPaymentCaptured(payment.getId(), payment.getAmountPaise(), payment.getCurrency());
-        auditService.record("PAYMENT_CAPTURED", "Payment", payment.getId(),
-        "Captured via checkout verification: orderRef=" + order.getOrderReference()
-                + ", amount=" + payment.getAmountPaise() + "p", "CHECKOUT");
-        evaluateRiskSafely(payment);
-        if (order.canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)) {
-            order.transitionTo(BusinessOrderStatus.PAYMENT_CAPTURED);
-            orderRepository.save(order);
-        }
+    payment = paymentRepository.save(payment);
+    ledgerService.postPaymentCaptured(payment.getId(), payment.getAmountPaise(), payment.getCurrency());
 
-        log.info("Webhook payment captured and recorded: paymentId={}", razorpayPaymentId);
+    auditService.record(
+            "PAYMENT_CAPTURED",
+            "Payment",
+            payment.getId(),
+            "Captured via " + source.toLowerCase() + ": orderRef=" + order.getOrderReference()
+                    + ", amount=" + payment.getAmountPaise() + "p",
+            source
+    );
+
+    evaluateRiskSafely(payment);
+
+    if (order.canTransitionTo(BusinessOrderStatus.PAYMENT_CAPTURED)) {
+        order.transitionTo(BusinessOrderStatus.PAYMENT_CAPTURED);
+        orderRepository.save(order);
     }
+
+    log.info("Gateway capture recorded: source={}, paymentId={}", source, razorpayPaymentId);
+}
 
     /** Handle a payment failure via webhook. */
     @Transactional

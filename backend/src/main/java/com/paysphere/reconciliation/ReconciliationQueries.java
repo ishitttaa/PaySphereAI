@@ -109,4 +109,37 @@ public class ReconciliationQueries {
 
         return out;
     }
+        public record UnpaidOrder(UUID id, String razorpayOrderId, String orderReference) {}
+
+    public record RecentPayment(UUID id, String razorpayPaymentId, long amountPaise, String currency) {}
+
+    /** Recent orders that carry a gateway order id but have no payment row on our side. */
+    public List<UnpaidOrder> findRecentOrdersWithoutPayment(Instant createdAfter, int limit) {
+        return jdbc.query("""
+                SELECT o.id, o.razorpay_order_id, o.order_reference FROM business_orders o
+                WHERE o.status IN ('PAYMENT_INITIATED', 'PAYMENT_EXPIRED', 'PAYMENT_FAILED')
+                  AND o.razorpay_order_id IS NOT NULL
+                  AND o.created_at > ?
+                  AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.business_order_id = o.id)
+                ORDER BY o.created_at DESC
+                LIMIT ?
+                """,
+                (rs, i) -> new UnpaidOrder(rs.getObject("id", UUID.class),
+                        rs.getString("razorpay_order_id"), rs.getString("order_reference")),
+                Timestamp.from(createdAfter), limit);
+    }
+
+    /** Recent payments we hold as captured (or fully refunded). */
+    public List<RecentPayment> findRecentCapturedPayments(Instant createdAfter, int limit) {
+        return jdbc.query("""
+                SELECT id, razorpay_payment_id, amount_paise, currency FROM payments
+                WHERE status IN ('CAPTURED', 'REFUNDED') AND created_at > ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (rs, i) -> new RecentPayment(rs.getObject("id", UUID.class),
+                        rs.getString("razorpay_payment_id"), rs.getLong("amount_paise"),
+                        rs.getString("currency")),
+                Timestamp.from(createdAfter), limit);
+    }
 }

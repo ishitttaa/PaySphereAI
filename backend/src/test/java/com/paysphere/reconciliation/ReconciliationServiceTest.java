@@ -10,7 +10,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-
+import java.util.Map;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -32,7 +32,8 @@ class ReconciliationServiceTest {
     @Mock private AuditService auditService;
     @InjectMocks private ReconciliationService service;
     @Mock private RefundReconciler refundReconciler;
-    
+    @Mock private GatewayPaymentReconciler gatewayPaymentReconciler;
+
     private final Instant now = Instant.parse("2026-01-01T12:00:00Z");
 
     private ReconciliationFinding finding(UUID id) {
@@ -42,6 +43,8 @@ class ReconciliationServiceTest {
 
     @Test
     void newProblemsBecomeRiskFlagsAndAreAudited() {
+        when(gatewayPaymentReconciler.reconcile(any()))
+                 .thenReturn(new GatewayPaymentResult(Map.of(), List.of()));
         UUID id = UUID.randomUUID();
         when(queries.findAllProblems(now.minus(ReconciliationService.STALE_PENDING_REFUND_AFTER)))
                 .thenReturn(List.of(finding(id)));
@@ -59,6 +62,9 @@ class ReconciliationServiceTest {
 
     @Test
     void aProblemThatAlreadyHasAFlagIsNotFlaggedAgain() {
+        when(gatewayPaymentReconciler.reconcile(any()))
+                .thenReturn(new GatewayPaymentResult(Map.of(), List.of()));
+
         UUID id = UUID.randomUUID();
         when(queries.findAllProblems(now.minus(ReconciliationService.STALE_PENDING_REFUND_AFTER)))
                 .thenReturn(List.of(finding(id)));

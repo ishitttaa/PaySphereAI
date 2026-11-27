@@ -27,15 +27,16 @@ public class SimulatorController {
     private final WebhookService webhookService;
 
     public record PayRequest(@NotBlank String razorpayOrderId, String outcome,
-                             String method, Boolean international) {}
+                             String method, Boolean international, Integer minutesAgo) {}
 
     @PostMapping("/pay")
     public ResponseEntity<ApiResponse<Map<String, Object>>> pay(@Valid @RequestBody PayRequest request) {
         boolean success = !"FAILURE".equalsIgnoreCase(request.outcome());
         String method = request.method() != null ? request.method() : "card";
         boolean international = Boolean.TRUE.equals(request.international());
+        int minutesAgo = request.minutesAgo() == null ? 0 : Math.max(0, request.minutesAgo());
 
-        return gateway.payOrder(request.razorpayOrderId(), success, method, international)
+        return gateway.payOrder(request.razorpayOrderId(), success, method, international, minutesAgo)
                 .map(result -> ResponseEntity.ok(ApiResponse.success(result)))
                 .orElseGet(() -> ResponseEntity.badRequest()
                         .body(ApiResponse.failure("Unknown simulated order")));

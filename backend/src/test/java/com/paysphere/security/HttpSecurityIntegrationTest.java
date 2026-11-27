@@ -28,7 +28,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * Do not "fix" a failure by loosening the test; find out why the route changed.
  */
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"SECURITY_MODE=strict", "APP_ENV=development"})
+@TestPropertySource(properties = {"SECURITY_MODE=strict", "APP_ENV=development", "payment.gateway=simulator"})
 class HttpSecurityIntegrationTest extends BaseIntegrationTest {
 
     @Autowired private MockMvc mockMvc;

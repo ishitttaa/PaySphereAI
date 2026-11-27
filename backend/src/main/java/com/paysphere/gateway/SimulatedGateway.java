@@ -4,13 +4,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
-
+import java.util.Comparator;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Map;
@@ -28,8 +29,7 @@ public class SimulatedGateway implements PaymentGateway {
 
     private record SimOrder(long amountPaise, String currency) {}
     private record SimPayment(String id, String orderId, long amountPaise, String currency,
-                              String status, String method, boolean international) {}
-
+                              String status, String method, boolean international, long createdAt) {}
     private static final String ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
     private final Map<String, SimOrder> orders = new ConcurrentHashMap<>();
@@ -145,18 +145,56 @@ public class SimulatedGateway implements PaymentGateway {
                                                ((Number) a.get("created_at")).longValue()))
                 .toList();
     }
+        @Override
+    public List<Map<String, Object>> fetchPaymentsForOrder(String razorpayOrderId) {
+        if (!orders.containsKey(razorpayOrderId)) {
+            throw GatewayException.fromHttpStatus(400, "The id provided does not exist");
+        }
+        return payments.values().stream()
+                .filter(p -> razorpayOrderId.equals(p.orderId()))
+                .sorted(Comparator.comparingLong(SimPayment::createdAt))
+                .map(p -> {
+                    Map<String, Object> m = new HashMap<>();
+                    m.put("id", p.id());
+                    m.put("order_id", p.orderId());
+                    m.put("amount", p.amountPaise());
+                    m.put("currency", p.currency());
+                    m.put("status", p.status());
+                    m.put("captured", "captured".equals(p.status()));
+                    m.put("method", p.method());
+                    m.put("international", p.international());
+                    m.put("amount_refunded", refundedAmount(p.id()));
+                    m.put("created_at", p.createdAt());
+                    return m;
+                })
+                .toList();
+    }
 
+    private long refundedAmount(String paymentId) {
+        return refundsByKey.values().stream()
+                .filter(r -> paymentId.equals(r.get("payment_id")))
+                .mapToLong(r -> ((Number) r.get("amount")).longValue())
+                .sum();
+    }
     // ── Simulator-only: stands in for the customer paying in the checkout popup ──
 
     public Optional<Map<String, Object>> payOrder(String orderId, boolean success,
                                                   String method, boolean international) {
+        return payOrder(orderId, success, method, international, 0);
+    }
+
+    /** minutesAgo backdates the payment, so reconciliation (which ignores very recent payments) can be tried. */
+    public Optional<Map<String, Object>> payOrder(String orderId, boolean success, String method,
+                                                  boolean international, int minutesAgo) {
         SimOrder order = orders.get(orderId);
         if (order == null) {
             return Optional.empty();
         }
         String paymentId = "pay_sim_" + randomId(14);
-        payments.put(paymentId, new SimPayment(paymentId, orderId, order.amountPaise(),
-                order.currency(), success ? "captured" : "failed", method, international));
+        long createdAt = java.time.Instant.now().getEpochSecond();
+         payments.put(paymentId, new SimPayment(paymentId, orderId, order.amountPaise(),
+                order.currency(), success ? "captured" : "failed", method, international,
+                java.time.Instant.now().getEpochSecond() - minutesAgo * 60L));
 
         Map<String, Object> result = new HashMap<>();
         result.put("razorpayPaymentId", paymentId);
