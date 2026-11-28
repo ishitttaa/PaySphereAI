@@ -34,6 +34,9 @@ public class BusinessOrder {
     @Column(name = "id", updatable = false, nullable = false)
     private UUID id;
 
+    @Column(name = "merchant_id", nullable = false)
+    private UUID merchantId;
+
     @Column(name = "order_reference", nullable = false, unique = true, length = 50)
     private String orderReference;
 

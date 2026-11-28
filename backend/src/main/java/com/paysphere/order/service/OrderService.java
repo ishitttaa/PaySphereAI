@@ -72,6 +72,7 @@ public class OrderService {
                 .orderReference(orderReference)
                 .productId(request.productCode())
                 .productName(product.getName())
+                .merchantId(product.getMerchantId())  // N9: order belongs to the product's merchant
                 .amountPaise(product.getPricePaise())  // From DB — not from client!
                 .currency(product.getCurrency())
                 .status(BusinessOrderStatus.PENDING)
