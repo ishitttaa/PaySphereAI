@@ -1,7 +1,9 @@
 package com.paysphere.merchant;
 
 import com.paysphere.common.response.ApiResponse;
+import com.paysphere.merchant.MerchantDtos.CreateMerchantAdminRequest;
 import com.paysphere.merchant.MerchantDtos.CreateMerchantRequest;
+import com.paysphere.merchant.MerchantDtos.MerchantAdminResponse;
 import com.paysphere.merchant.MerchantDtos.MerchantResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -11,10 +13,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
- * POST /api/v1/merchants   create a merchant   (PLATFORM_ADMIN)
- * GET  /api/v1/merchants   list merchants      (PLATFORM_ADMIN, PLATFORM_OPERATOR)
+ * POST /api/v1/merchants                      create a merchant       (PLATFORM_ADMIN)
+ * POST /api/v1/merchants/{merchantId}/admins  create a merchant admin (PLATFORM_ADMIN)
+ * GET  /api/v1/merchants                      list merchants          (PLATFORM_ADMIN, PLATFORM_OPERATOR)
  */
 @RestController
 @RequestMapping("/api/v1/merchants")
@@ -29,6 +33,14 @@ public class MerchantController {
             @Valid @RequestBody CreateMerchantRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success(merchantService.createMerchant(request.name())));
+    }
+
+    @PostMapping("/{merchantId}/admins")
+    public ResponseEntity<ApiResponse<MerchantAdminResponse>> createAdmin(
+            @PathVariable UUID merchantId,
+            @Valid @RequestBody CreateMerchantAdminRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResponse.success(merchantService.createMerchantAdmin(merchantId, request)));
     }
 
     @GetMapping

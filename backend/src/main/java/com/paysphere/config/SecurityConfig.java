@@ -84,6 +84,7 @@ public class SecurityConfig {
                         "/api/v1/risk-flags/*/dismiss").hasRole(ADMIN);
                 auth.requestMatchers("/api/v1/audit-logs/**").hasRole(ADMIN);
                 auth.requestMatchers(HttpMethod.POST, "/api/v1/merchants").hasRole(ADMIN);
+                auth.requestMatchers(HttpMethod.POST, "/api/v1/merchants/*/admins").hasRole(ADMIN);                
                 auth.requestMatchers(HttpMethod.GET, "/api/v1/merchants").hasAnyRole(ADMIN, OPERATOR);               
                 auth.requestMatchers(HttpMethod.POST, "/api/v1/refunds", "/api/v1/settlements/record",
                         "/api/v1/risk-flags/*/dismiss", "/api/v1/reconciliation/run").hasRole(ADMIN);
