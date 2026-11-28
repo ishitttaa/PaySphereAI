@@ -42,7 +42,7 @@ Where something was **not** verified, it says so. Last updated after **N11** (au
 
 ### A good first message from you
 
-> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and 168 tests pass. N3 (`payment.failed`) and N7c (gateway reconciliation) are done; the next planned step is N9 (multi-tenancy). Have you merged the last pull request, and is CI green on `main`?"
+> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and 170 tests pass. N3 (`payment.failed`) and N7c (gateway reconciliation) are done; the next planned step is N9 (multi-tenancy). Have you merged the last pull request, and is CI green on `main`?"
 
 ---
 
@@ -208,7 +208,7 @@ Expected in the log: `PAYMENT SIMULATOR ACTIVE` (simulator mode), Flyway at the 
 mvn test
 ```
 
-Expected: `Tests run: 168, Failures: 0, Errors: 0`. (If your count differs after adding tests, update this line.)
+Expected: `Tests run: 170, Failures: 0, Errors: 0`. (If your count differs after adding tests, update this line.)
 
 ---
 
@@ -424,12 +424,12 @@ These are the project's invariants. Check every change against them.
 
 ## 10. Testing and CI
 
-`mvn test` runs **168 tests**:
+`mvn test` runs **170 tests**:
 
 | Kind | Classes |
 |---|---|
 | Unit (Mockito and plain) | `LedgerServiceTest`, `OrderServiceTest`, `OrderExpiryServiceTest`, `BusinessOrderTransitionTest`, `RiskServiceTest`, `RiskDismissTest`, `WebhookServiceTest`, `PaymentServiceTest`, `RefundServiceTest`, `SettlementServiceTest`, `JwtServiceTest`, `JwtAuthFilterTest`, `CurrentUserTest`, `AuthServiceTest`, `LoginAttemptLimiterTest`, `SimulatedGatewayTest`, `GatewayExceptionTest`, `AuditServiceTest`, `ReconciliationServiceTest` |
-| Integration (need Docker) | `HealthControllerIntegrationTest`, `UserRepositoryIntegrationTest`, `HttpSecurityIntegrationTest`, `ReconciliationIntegrationTest`, `AuditIdentityIntegrationTest` |
+| Integration (need Docker) | `HealthControllerIntegrationTest`, `UserRepositoryIntegrationTest`, `HttpSecurityIntegrationTest`, `ReconciliationIntegrationTest`, `AuditIdentityIntegrationTest`, `WebhookFailurePersistenceIntegrationTest` |
 
 **Testcontainers lesson:** `BaseIntegrationTest` starts **one** Postgres container for the whole run (static block, no `@Container`). With one container per class, Spring's cached context kept pointing at a stopped container and later test classes failed with "connection refused".
 
@@ -460,6 +460,7 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 15. **N11:** audit trail records the real actor, IP and browser; logins, settlements and flag dismissals are audited; the risk-flag reviewer comes from the token, not the request body.
 16. **Zero-fee settlement fix:** `postSettlement` skips zero-amount entries (fees = 0, or fees = gross), with two new tests in `LedgerServiceTest`.
 17. **N3:** `payment.failed` webhook records failed attempts; captures upgrade a FAILED row (checkout, webhook and reconciliation); reconciliation still finds a paid retry after a failed attempt.
+18. **Webhook failure fix:** `processWebhook` is no longer `@Transactional`, so a failed event keeps its `FAILED` row (rule 9.6). Proven by `WebhookFailurePersistenceIntegrationTest`.
 
 ---
 
@@ -475,7 +476,6 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 - The login rate limiter and the simulator keep state in memory (lost on restart, not shared between servers).
 - Settlements are entered manually by an admin; tax is not modelled; settlement currency is hardcoded to INR.
 - Payment method details (card, bank, wallet, VPA) are mostly not stored.
-- `WebhookService.processWebhook` carries `@Transactional`, which contradicts section 7.2 and rule 9.6: a failing event may roll back together with its `FAILED` `webhook_events` record. Prove it with an integration test, then fix on its own branch.
 - Redis runs in Docker but nothing uses it.
 - `spring.jpa.open-in-view` is on (warning in the log).
 - `mvnw.cmd` is broken and has an uncommitted local edit; do not commit it.
