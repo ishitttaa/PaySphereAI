@@ -26,6 +26,10 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import com.paysphere.security.CurrentUser;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+
 /**
  * PaymentService — Handles payment verification and lifecycle management.
  *
@@ -275,10 +279,11 @@ public class PaymentService {
         log.info("Payment failure recorded via webhook: paymentId={}", razorpayPaymentId);
     }
 
-    /** Get payment by ID. */
+     /** Get payment by ID. A merchant caller gets "not found" for another merchant's payment. */
     @Transactional(readOnly = true)
     public PaymentResponse getPaymentById(UUID paymentId) {
         return paymentRepository.findById(paymentId)
+                .filter(this::visibleToCaller)
                 .map(this::toPaymentResponse)
                 .orElseThrow(() -> new ResourceNotFoundException("Payment", paymentId));
     }
@@ -292,19 +297,47 @@ public class PaymentService {
                         "Payment not found: " + razorpayPaymentId));
     }
 
-    /** Get all payments for a business order. */
+       /** Get all payments for a business order the caller may see. */
     @Transactional(readOnly = true)
     public List<PaymentResponse> getPaymentsForOrder(UUID orderId) {
-        return paymentRepository.findByBusinessOrderId(orderId).stream()
+        Optional<UUID> scope = merchantScope();
+        List<Payment> payments = scope.isPresent()
+                ? paymentRepository.findByBusinessOrderIdAndBusinessOrderMerchantId(orderId, scope.get())
+                : paymentRepository.findByBusinessOrderId(orderId);
+        return payments.stream()
                 .map(this::toPaymentResponse)
                 .collect(Collectors.toList());
     }
 
-    /** List all payments paginated. */
+    /** List payments the caller may see, paginated. */
     @Transactional(readOnly = true)
     public Page<PaymentResponse> listPayments(Pageable pageable) {
-        return paymentRepository.findAllByOrderByCreatedAtDesc(pageable)
-                .map(this::toPaymentResponse);
+        Optional<UUID> scope = merchantScope();
+        Page<Payment> payments = scope.isPresent()
+                ? paymentRepository.findByBusinessOrderMerchantIdOrderByCreatedAtDesc(scope.get(), pageable)
+                : paymentRepository.findAllByOrderByCreatedAtDesc(pageable);
+        return payments.map(this::toPaymentResponse);
+    }
+
+    private boolean visibleToCaller(Payment payment) {
+        return merchantScope()
+                .map(id -> payment.getBusinessOrder() != null
+                        && id.equals(payment.getBusinessOrder().getMerchantId()))
+                .orElse(true);
+    }
+
+    /**
+     * Fail-closed, same rule as OrderService. Empty means "no restriction" and is given ONLY to
+     * platform staff. Everyone else is limited to their own merchant; no merchant means nothing.
+     */
+    private Optional<UUID> merchantScope() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        boolean platformStaff = auth != null && auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().startsWith("ROLE_PLATFORM_"));
+        if (platformStaff) {
+            return Optional.empty();
+        }
+        return Optional.of(CurrentUser.merchantId().orElse(new UUID(0L, 0L)));
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
