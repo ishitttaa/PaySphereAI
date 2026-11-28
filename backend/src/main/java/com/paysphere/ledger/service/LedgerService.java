@@ -10,7 +10,12 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import com.paysphere.security.MerchantScope;
+import com.paysphere.ledger.dto.LedgerTransactionResponse;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import java.util.Optional;
+import java.util.UUID;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -226,13 +231,21 @@ public class LedgerService {
     }
 
     @Transactional(readOnly = true)
-    public org.springframework.data.domain.Page<LedgerTransaction> listTransactions(org.springframework.data.domain.Pageable pageable) {
-        return txRepo.findAllByOrderByPostedAtDesc(pageable);
+    public Page<LedgerTransactionResponse> listTransactions(Pageable pageable) {
+        Optional<UUID> scope = MerchantScope.current();
+        Page<LedgerTransaction> page = scope.isPresent()
+                ? txRepo.findForMerchant(scope.get(), pageable)
+                : txRepo.findAllByOrderByPostedAtDesc(pageable);
+        return page.map(LedgerTransactionResponse::from);
     }
 
     @Transactional(readOnly = true)
-    public org.springframework.data.domain.Page<LedgerTransaction> listTransactionsBySourceType(String sourceType, org.springframework.data.domain.Pageable pageable) {
-        return txRepo.findBySourceTypeOrderByPostedAtDesc(sourceType, pageable);
+    public Page<LedgerTransactionResponse> listTransactionsBySourceType(String sourceType, Pageable pageable) {
+        Optional<UUID> scope = MerchantScope.current();
+        Page<LedgerTransaction> page = scope.isPresent()
+                ? txRepo.findForMerchantAndSourceType(scope.get(), sourceType, pageable)
+                : txRepo.findBySourceTypeOrderByPostedAtDesc(sourceType, pageable);
+        return page.map(LedgerTransactionResponse::from);
     }
 
     // ── Private helpers ────────────────────────────────────────────────────────
