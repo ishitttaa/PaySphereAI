@@ -105,6 +105,10 @@ public class SecurityConfig {
                 auth.requestMatchers(HttpMethod.GET, "/api/v1/dashboard/stats")
                         .hasAnyRole(ADMIN, OPERATOR, "MERCHANT_ADMIN");
 
+                // Ledger transactions: a merchant admin sees only their own (filtered in LedgerService)
+                auth.requestMatchers(HttpMethod.GET, "/api/v1/ledger/transactions")
+                        .hasAnyRole(ADMIN, OPERATOR, "MERCHANT_ADMIN");
+                    
                 // Staff: read-only views
                 auth.requestMatchers(HttpMethod.GET, "/api/v1/orders/**",
                          "/api/v1/ledger/**", "/api/v1/settlements/**",

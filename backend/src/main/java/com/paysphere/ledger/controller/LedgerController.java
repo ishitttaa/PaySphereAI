@@ -14,6 +14,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import com.paysphere.ledger.dto.LedgerTransactionResponse;
 
 import java.util.List;
 
@@ -35,13 +36,13 @@ public class LedgerController {
 
     @Operation(summary = "List ledger journal transactions with balanced debit/credit entries (paginated, newest first)")
     @GetMapping("/transactions")
-    public ResponseEntity<ApiResponse<Page<LedgerTransaction>>> getTransactions(
+    public ResponseEntity<ApiResponse<Page<LedgerTransactionResponse>>> getTransactions(
             @RequestParam(required = false) String sourceType,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size
     ) {
-        Pageable pageable = PageRequest.of(page, size, Sort.by("postedAt").descending());
-        Page<LedgerTransaction> transactions;
+        Pageable pageable = PageRequest.of(page, Math.min(size, 100), Sort.by("postedAt").descending());
+        Page<LedgerTransactionResponse> transactions;
         if (sourceType != null && !sourceType.isBlank()) {
             transactions = ledgerService.listTransactionsBySourceType(sourceType.toUpperCase(), pageable);
         } else {
