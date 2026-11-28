@@ -1,6 +1,7 @@
 package com.paysphere.security;
 
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtBuilder;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,17 +32,25 @@ public class JwtService {
         this.expirySeconds = expirySeconds;
     }
 
+    /** Token for platform staff (no merchant). */
     public String createToken(UUID userId, String email, List<String> roles) {
+        return createToken(userId, email, roles, null);
+    }
+
+    /** Token for a user who may belong to a merchant (merchantId null = platform staff). */
+    public String createToken(UUID userId, String email, List<String> roles, UUID merchantId) {
         Instant now = Instant.now();
-        return Jwts.builder()
+        JwtBuilder builder = Jwts.builder()
                 .issuer(ISSUER)
                 .subject(userId.toString())
                 .claim("email", email)
                 .claim("roles", roles)
                 .issuedAt(Date.from(now))
-                .expiration(Date.from(now.plusSeconds(expirySeconds)))
-                .signWith(key)
-                .compact();
+                .expiration(Date.from(now.plusSeconds(expirySeconds)));
+        if (merchantId != null) {
+            builder.claim("merchantId", merchantId.toString());
+        }
+        return builder.signWith(key).compact();
     }
 
     /** Throws io.jsonwebtoken.JwtException if the token is forged, tampered or expired. */

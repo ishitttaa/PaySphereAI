@@ -30,6 +30,15 @@ public final class CurrentUser {
         return Optional.empty();
     }
 
+    /** The merchant of the logged-in user. Empty for platform staff and anonymous callers. */
+    public static Optional<UUID> merchantId() {
+        Authentication authentication = current();
+        if (authentication instanceof MerchantAuthenticationToken token) {
+            return Optional.ofNullable(token.getMerchantId());
+        }
+        return Optional.empty();
+    }
+
     private static Authentication current() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !authentication.isAuthenticated()

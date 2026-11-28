@@ -14,6 +14,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Reads "Authorization: Bearer <token>", and if the token is valid, logs the caller in
@@ -41,8 +42,9 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 List<?> roles = claims.get("roles", List.class);
                 List<SimpleGrantedAuthority> authorities = roles == null ? List.of()
                         : roles.stream().map(r -> new SimpleGrantedAuthority("ROLE_" + r)).toList();
-                UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                        claims.get("email", String.class), null, authorities);
+                UUID merchantId = parseUuid(claims.get("merchantId", String.class));
+                UsernamePasswordAuthenticationToken authentication = new MerchantAuthenticationToken(
+                        claims.get("email", String.class), authorities, merchantId);
                 authentication.setDetails(claims.getSubject());   // the user id, read by CurrentUser.id()
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             } catch (JwtException | IllegalArgumentException e) {
@@ -50,5 +52,16 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             }
         }
         chain.doFilter(request, response);
+    }
+
+    private static UUID parseUuid(String value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 }
