@@ -32,6 +32,9 @@ public class Product {
     @Column(name = "id", updatable = false, nullable = false)
     private UUID id;
 
+    @Column(name = "merchant_id", nullable = false)
+    private UUID merchantId;
+
     @Column(name = "product_code", nullable = false, unique = true, length = 100)
     private String productCode;
 
