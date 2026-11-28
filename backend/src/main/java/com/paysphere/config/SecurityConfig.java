@@ -97,9 +97,13 @@ public class SecurityConfig {
                 auth.requestMatchers(HttpMethod.GET, "/api/v1/payments", "/api/v1/payments/**")
                         .hasAnyRole(ADMIN, OPERATOR, "MERCHANT_ADMIN");
                 
+                // Refunds: staff see all, a merchant admin sees only their own (filtered in RefundService)
+                auth.requestMatchers(HttpMethod.GET, "/api/v1/refunds/**")
+                        .hasAnyRole(ADMIN, OPERATOR, "MERCHANT_ADMIN");
+
                 // Staff: read-only views
                 auth.requestMatchers(HttpMethod.GET, "/api/v1/orders/**",
-                        "/api/v1/refunds/**", "/api/v1/ledger/**", "/api/v1/settlements/**",
+                         "/api/v1/ledger/**", "/api/v1/settlements/**",
                         "/api/v1/risk-flags/**", "/api/v1/dashboard/**").hasAnyRole(ADMIN, OPERATOR);
 
                 // Anything not listed above is closed

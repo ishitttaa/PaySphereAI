@@ -31,6 +31,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import com.paysphere.security.CurrentUser;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import java.util.Optional;
 
 /**
  * RefundService: creates refunds and applies their outcome.
@@ -402,28 +406,53 @@ public class RefundService {
         return e instanceof GatewayException g && g.isDefinitiveRejection();
     }
 
-    /** Get all refunds for a payment. */
+        /** Get all refunds for a payment the caller may see. */
     @Transactional(readOnly = true)
     public List<RefundResponse> getRefundsForPayment(UUID paymentId) {
-        return refundRepository.findByPaymentId(paymentId).stream()
+        Optional<UUID> scope = merchantScope();
+        List<Refund> refunds = scope.isPresent()
+                ? refundRepository.findByPaymentIdAndBusinessOrderMerchantId(paymentId, scope.get())
+                : refundRepository.findByPaymentId(paymentId);
+        return refunds.stream()
                 .map(this::toRefundResponse)
                 .collect(Collectors.toList());
     }
 
-    /** Get all refunds for a business order. */
+    /** Get all refunds for a business order the caller may see. */
     @Transactional(readOnly = true)
     public List<RefundResponse> getRefundsForOrder(UUID orderId) {
-        return refundRepository.findByBusinessOrderId(orderId).stream()
+        Optional<UUID> scope = merchantScope();
+        List<Refund> refunds = scope.isPresent()
+                ? refundRepository.findByBusinessOrderIdAndBusinessOrderMerchantId(orderId, scope.get())
+                : refundRepository.findByBusinessOrderId(orderId);
+        return refunds.stream()
                 .map(this::toRefundResponse)
                 .collect(Collectors.toList());
     }
 
-    /** Get a refund by ID. */
+    /** Get a refund by ID. A merchant caller gets "not found" for another merchant's refund. */
     @Transactional(readOnly = true)
     public RefundResponse getRefundById(UUID refundId) {
-        return refundRepository.findById(refundId)
-                .map(this::toRefundResponse)
+        Optional<UUID> scope = merchantScope();
+        Optional<Refund> refund = scope.isPresent()
+                ? refundRepository.findByIdAndBusinessOrderMerchantId(refundId, scope.get())
+                : refundRepository.findById(refundId);
+        return refund.map(this::toRefundResponse)
                 .orElseThrow(() -> new ResourceNotFoundException("Refund", refundId));
+    }
+
+    /**
+     * Fail-closed, same rule as OrderService and PaymentService. Empty means "no restriction" and is
+     * given ONLY to platform staff. Everyone else is limited to their own merchant; no merchant means nothing.
+     */
+    private Optional<UUID> merchantScope() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        boolean platformStaff = auth != null && auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().startsWith("ROLE_PLATFORM_"));
+        if (platformStaff) {
+            return Optional.empty();
+        }
+        return Optional.of(CurrentUser.merchantId().orElse(new UUID(0L, 0L)));
     }
 
     private RefundResponse toRefundResponse(Refund r) {
