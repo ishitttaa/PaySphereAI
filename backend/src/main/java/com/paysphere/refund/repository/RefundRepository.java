@@ -38,4 +38,11 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     List<Refund> findByPaymentIdAndBusinessOrderMerchantId(UUID paymentId, UUID merchantId);
 
     List<Refund> findByBusinessOrderIdAndBusinessOrderMerchantId(UUID businessOrderId, UUID merchantId);
+        /** Processed refunds of one merchant. Summed in the database. */
+    @Query("select coalesce(sum(r.amountPaise), 0) from Refund r "
+            + "where r.status = com.paysphere.refund.entity.RefundStatus.PROCESSED "
+            + "and r.businessOrder.merchantId = :merchantId")
+    Long sumProcessedAmountPaiseByMerchant(@Param("merchantId") UUID merchantId);
+
+    long countByBusinessOrderMerchantId(UUID merchantId);
 }

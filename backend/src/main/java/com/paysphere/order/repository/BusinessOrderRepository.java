@@ -17,7 +17,9 @@ import java.time.Instant;
 
 @Repository
 public interface BusinessOrderRepository extends JpaRepository<BusinessOrder, UUID> {
+    long countByMerchantId(UUID merchantId);
 
+    long countByMerchantIdAndStatus(UUID merchantId, BusinessOrderStatus status);
     Optional<BusinessOrder> findByOrderReference(String orderReference);
 
     Optional<BusinessOrder> findByRazorpayOrderId(String razorpayOrderId);

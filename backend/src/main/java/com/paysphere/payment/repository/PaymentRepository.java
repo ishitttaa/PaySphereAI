@@ -48,4 +48,12 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     Page<Payment> findByBusinessOrderMerchantIdOrderByCreatedAtDesc(UUID merchantId, Pageable pageable);
 
     List<Payment> findByBusinessOrderIdAndBusinessOrderMerchantId(UUID businessOrderId, UUID merchantId);
+        /** Captured plus fully refunded payments of one merchant. Summed in the database. */
+    @Query("select coalesce(sum(p.amountPaise), 0) from Payment p "
+            + "where p.businessOrder.merchantId = :merchantId "
+            + "and p.status in (com.paysphere.payment.entity.PaymentStatus.CAPTURED, "
+            + "                 com.paysphere.payment.entity.PaymentStatus.REFUNDED)")
+    Long sumCapturedAmountPaiseByMerchant(@Param("merchantId") UUID merchantId);
+
+    long countByStatusAndBusinessOrderMerchantId(PaymentStatus status, UUID merchantId);
 }
