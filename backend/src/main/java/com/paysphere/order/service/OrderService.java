@@ -115,6 +115,7 @@ public class OrderService {
 
         return toOrderResponse(order);
     }
+
     /** Find an order by its internal UUID. */
     @Transactional(readOnly = true)
     public OrderResponse getOrderById(UUID orderId) {
@@ -158,17 +159,16 @@ public class OrderService {
         return merchantScope().map(id -> id.equals(order.getMerchantId())).orElse(true);
     }
 
-    /** Empty means "no restriction". A merchant user without a merchant sees nothing. */
+    /**
+     * Fail-closed. Empty means "no restriction" and is given ONLY to platform staff.
+     * Everyone else (merchant users, unknown roles, nobody logged in) is limited to their
+     * own merchant, and a caller without a merchant sees nothing.
+     */
     private Optional<UUID> merchantScope() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth == null) {
-            return Optional.empty();
-        }
-        boolean platform = auth.getAuthorities().stream()
+        boolean platformStaff = auth != null && auth.getAuthorities().stream()
                 .anyMatch(a -> a.getAuthority().startsWith("ROLE_PLATFORM_"));
-        boolean merchant = auth.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().startsWith("ROLE_MERCHANT_"));
-        if (platform || !merchant) {
+        if (platformStaff) {
             return Optional.empty();
         }
         return Optional.of(CurrentUser.merchantId().orElse(new UUID(0L, 0L)));
