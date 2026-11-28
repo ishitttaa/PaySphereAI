@@ -10,7 +10,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.json.JSONObject;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -52,13 +51,17 @@ public class WebhookService {
     private final PaymentGateway paymentGateway;
     private final PaymentService paymentService;
     private final RefundService refundService;
+
     /**
      * Main entry point: receive and process a Razorpay webhook.
+     *
+     * Deliberately NOT @Transactional (rule 9.6): one shared transaction would roll back
+     * the FAILED row together with the failing handler. Each handler below runs in its
+     * own transaction.
      *
      * @param rawPayload   The raw request body (bytes → String, not parsed JSON)
      * @param signature    The X-Razorpay-Signature header value
      */
-    @Transactional
     public void processWebhook(String rawPayload, String signature) {
 
         // Step 1: Verify signature BEFORE parsing the payload
@@ -121,6 +124,7 @@ public class WebhookService {
             throw new IllegalStateException("Webhook processing failed for event " + eventId, e);
         }
     }
+
     // ── Event type handlers ───────────────────────────────────────────────────
 
     private void processEventByType(String eventType, JSONObject payload) {
@@ -193,6 +197,7 @@ public class WebhookService {
         log.info("Webhook refund.processed: refundId={}, paymentId={}, amount={}p", refundId, paymentId, amount);
         refundService.handleWebhookRefundProcessed(refundId, paymentId, amount);
     }
+
     private void handleRefundFailed(JSONObject payload) {
         JSONObject refund = entityOf(payload, "refund");
         if (refund == null) {
@@ -209,12 +214,13 @@ public class WebhookService {
         log.warn("Webhook refund.failed: refundId={}, paymentId={}, amount={}p", refundId, paymentId, amount);
         refundService.handleWebhookRefundFailed(refundId, paymentId, amount);
     }
+
     private JSONObject entityOf(JSONObject payload, String kind) {
         JSONObject outer = payload.optJSONObject("payload");
         JSONObject wrapper = outer == null ? null : outer.optJSONObject(kind);
         return wrapper == null ? null : wrapper.optJSONObject("entity");
     }
-    
+
     private Map<String, Object> jsonToMap(JSONObject json) {
         Map<String, Object> map = new HashMap<>();
         for (String key : json.keySet()) {
