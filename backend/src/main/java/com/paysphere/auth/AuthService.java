@@ -42,7 +42,7 @@ public class AuthService {
         }
 
         List<String> roles = userRepository.findRoleNames(user.getId());
-        String token = jwtService.createToken(user.getId(), user.getEmail(), roles);
+                String token = jwtService.createToken(user.getId(), user.getEmail(), roles, user.getMerchantId());
         return new LoginResponse(token, "Bearer", jwtService.getExpirySeconds(), user.getEmail(), roles);
     }
 }

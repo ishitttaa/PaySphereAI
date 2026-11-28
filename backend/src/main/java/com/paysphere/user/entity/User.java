@@ -49,6 +49,13 @@ public class User {
     @Column(name = "id", updatable = false, nullable = false)
     private UUID id;
 
+    /**
+     * N9: the merchant this user belongs to. NULL for platform staff
+     * (PLATFORM_ADMIN / PLATFORM_OPERATOR).
+     */
+    @Column(name = "merchant_id")
+    private UUID merchantId;
+
     @Column(name = "email", nullable = false, unique = true, length = 255)
     private String email;
 
