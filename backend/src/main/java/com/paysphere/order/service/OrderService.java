@@ -25,6 +25,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.UUID;
+import com.paysphere.security.MerchantScope;
 
 /**
  * OrderService — Orchestrates the business order creation flow.
@@ -138,7 +139,7 @@ public class OrderService {
     /** List orders the caller may see. */
     @Transactional(readOnly = true)
     public Page<OrderResponse> listOrders(Pageable pageable) {
-        Optional<UUID> scope = merchantScope();
+        Optional<UUID> scope = MerchantScope.current();
         Page<BusinessOrder> orders = scope.isPresent()
                 ? orderRepository.findByMerchantIdOrderByCreatedAtDesc(scope.get(), pageable)
                 : orderRepository.findAllByOrderByCreatedAtDesc(pageable);
@@ -148,7 +149,7 @@ public class OrderService {
     /** List orders the caller may see, filtered by status. */
     @Transactional(readOnly = true)
     public Page<OrderResponse> listOrdersByStatus(BusinessOrderStatus status, Pageable pageable) {
-        Optional<UUID> scope = merchantScope();
+        Optional<UUID> scope = MerchantScope.current();
         Page<BusinessOrder> orders = scope.isPresent()
                 ? orderRepository.findByMerchantIdAndStatusOrderByCreatedAtDesc(scope.get(), status, pageable)
                 : orderRepository.findByStatusOrderByCreatedAtDesc(status, pageable);
@@ -156,22 +157,7 @@ public class OrderService {
     }
 
     private boolean visibleToCaller(BusinessOrder order) {
-        return merchantScope().map(id -> id.equals(order.getMerchantId())).orElse(true);
-    }
-
-    /**
-     * Fail-closed. Empty means "no restriction" and is given ONLY to platform staff.
-     * Everyone else (merchant users, unknown roles, nobody logged in) is limited to their
-     * own merchant, and a caller without a merchant sees nothing.
-     */
-    private Optional<UUID> merchantScope() {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        boolean platformStaff = auth != null && auth.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().startsWith("ROLE_PLATFORM_"));
-        if (platformStaff) {
-            return Optional.empty();
-        }
-        return Optional.of(CurrentUser.merchantId().orElse(new UUID(0L, 0L)));
+        return MerchantScope.current().map(id -> id.equals(order.getMerchantId())).orElse(true);
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────

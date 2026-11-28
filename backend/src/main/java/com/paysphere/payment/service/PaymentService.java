@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import com.paysphere.security.MerchantScope;
 
 import com.paysphere.security.CurrentUser;
 import org.springframework.security.core.Authentication;
@@ -300,7 +301,8 @@ public class PaymentService {
        /** Get all payments for a business order the caller may see. */
     @Transactional(readOnly = true)
     public List<PaymentResponse> getPaymentsForOrder(UUID orderId) {
-        Optional<UUID> scope = merchantScope();
+        Optional<UUID> scope = MerchantScope.current();
+
         List<Payment> payments = scope.isPresent()
                 ? paymentRepository.findByBusinessOrderIdAndBusinessOrderMerchantId(orderId, scope.get())
                 : paymentRepository.findByBusinessOrderId(orderId);
@@ -312,7 +314,7 @@ public class PaymentService {
     /** List payments the caller may see, paginated. */
     @Transactional(readOnly = true)
     public Page<PaymentResponse> listPayments(Pageable pageable) {
-        Optional<UUID> scope = merchantScope();
+        Optional<UUID> scope = MerchantScope.current();
         Page<Payment> payments = scope.isPresent()
                 ? paymentRepository.findByBusinessOrderMerchantIdOrderByCreatedAtDesc(scope.get(), pageable)
                 : paymentRepository.findAllByOrderByCreatedAtDesc(pageable);
@@ -320,25 +322,12 @@ public class PaymentService {
     }
 
     private boolean visibleToCaller(Payment payment) {
-        return merchantScope()
+        return MerchantScope.current()
                 .map(id -> payment.getBusinessOrder() != null
                         && id.equals(payment.getBusinessOrder().getMerchantId()))
                 .orElse(true);
     }
 
-    /**
-     * Fail-closed, same rule as OrderService. Empty means "no restriction" and is given ONLY to
-     * platform staff. Everyone else is limited to their own merchant; no merchant means nothing.
-     */
-    private Optional<UUID> merchantScope() {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        boolean platformStaff = auth != null && auth.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().startsWith("ROLE_PLATFORM_"));
-        if (platformStaff) {
-            return Optional.empty();
-        }
-        return Optional.of(CurrentUser.merchantId().orElse(new UUID(0L, 0L)));
-    }
 
     // ── Private helpers ───────────────────────────────────────────────────────
     /** Finds the payment row for a gateway payment id and locks it. Id-only lookup first, so no stale copy is read before the lock. */
