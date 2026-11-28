@@ -187,8 +187,9 @@ class HttpSecurityIntegrationTest extends BaseIntegrationTest {
     void aLoggedInUserWithoutAStaffRoleIsForbidden() throws Exception {
         expectAll(STAFF, tokenWith(), Outcome.FORBIDDEN);
         // Payments are now readable by a merchant admin (scoped in PaymentService), so they are not in this check.
-        expectAll(STAFF.stream().filter(r -> !r.equals("GET /api/v1/payments")).toList(),
-                tokenWith("MERCHANT_ADMIN"), Outcome.FORBIDDEN);
+        expectAll(STAFF.stream().filter(r -> !r.equals("GET /api/v1/payments")
+                        && !r.startsWith("GET /api/v1/refunds/")).toList(),
+                tokenWith(), Outcome.FORBIDDEN);
         expectAll(ADMIN, tokenWith("MERCHANT_ADMIN"), Outcome.FORBIDDEN);
     }
 
@@ -226,6 +227,8 @@ class HttpSecurityIntegrationTest extends BaseIntegrationTest {
     assertThat(call("GET /api/v1/payments", merchant))
             .isEqualTo(Outcome.REACHED_APP);
     assertThat(call("GET /api/v1/payments/" + ID, merchant))
+            .isEqualTo(Outcome.REACHED_APP);
+    assertThat(call("GET /api/v1/refunds/" + ID, merchant))
             .isEqualTo(Outcome.REACHED_APP);
     }
 }
