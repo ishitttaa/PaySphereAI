@@ -17,7 +17,10 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import com.paysphere.security.CurrentUser;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import java.util.Optional;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Map;
@@ -112,11 +115,11 @@ public class OrderService {
 
         return toOrderResponse(order);
     }
-
     /** Find an order by its internal UUID. */
     @Transactional(readOnly = true)
     public OrderResponse getOrderById(UUID orderId) {
         BusinessOrder order = orderRepository.findById(orderId)
+                .filter(this::visibleToCaller)
                 .orElseThrow(() -> new ResourceNotFoundException("BusinessOrder", orderId));
         return toOrderResponse(order);
     }
@@ -125,23 +128,50 @@ public class OrderService {
     @Transactional(readOnly = true)
     public OrderResponse getOrderByReference(String reference) {
         BusinessOrder order = orderRepository.findByOrderReference(reference)
+                .filter(this::visibleToCaller)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Order not found with reference: " + reference));
         return toOrderResponse(order);
     }
 
-    /** List all orders with pagination. */
+    /** List orders the caller may see. */
     @Transactional(readOnly = true)
     public Page<OrderResponse> listOrders(Pageable pageable) {
-        return orderRepository.findAllByOrderByCreatedAtDesc(pageable)
-                .map(this::toOrderResponse);
+        Optional<UUID> scope = merchantScope();
+        Page<BusinessOrder> orders = scope.isPresent()
+                ? orderRepository.findByMerchantIdOrderByCreatedAtDesc(scope.get(), pageable)
+                : orderRepository.findAllByOrderByCreatedAtDesc(pageable);
+        return orders.map(this::toOrderResponse);
     }
 
-    /** List orders filtered by status. */
+    /** List orders the caller may see, filtered by status. */
     @Transactional(readOnly = true)
     public Page<OrderResponse> listOrdersByStatus(BusinessOrderStatus status, Pageable pageable) {
-        return orderRepository.findByStatusOrderByCreatedAtDesc(status, pageable)
-                .map(this::toOrderResponse);
+        Optional<UUID> scope = merchantScope();
+        Page<BusinessOrder> orders = scope.isPresent()
+                ? orderRepository.findByMerchantIdAndStatusOrderByCreatedAtDesc(scope.get(), status, pageable)
+                : orderRepository.findByStatusOrderByCreatedAtDesc(status, pageable);
+        return orders.map(this::toOrderResponse);
+    }
+
+    private boolean visibleToCaller(BusinessOrder order) {
+        return merchantScope().map(id -> id.equals(order.getMerchantId())).orElse(true);
+    }
+
+    /** Empty means "no restriction". A merchant user without a merchant sees nothing. */
+    private Optional<UUID> merchantScope() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null) {
+            return Optional.empty();
+        }
+        boolean platform = auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().startsWith("ROLE_PLATFORM_"));
+        boolean merchant = auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().startsWith("ROLE_MERCHANT_"));
+        if (platform || !merchant) {
+            return Optional.empty();
+        }
+        return Optional.of(CurrentUser.merchantId().orElse(new UUID(0L, 0L)));
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
