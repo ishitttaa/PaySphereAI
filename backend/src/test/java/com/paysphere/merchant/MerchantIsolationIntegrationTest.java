@@ -158,7 +158,6 @@ class MerchantIsolationIntegrationTest extends BaseIntegrationTest {
         String token = merchantToken(merchantA);
 
         assertThat(get("/api/v1/ledger/accounts", token).getResponse().getStatus()).isEqualTo(403);
-        assertThat(get("/api/v1/dashboard/stats", token).getResponse().getStatus()).isEqualTo(403);
         assertThat(get("/api/v1/audit-logs", token).getResponse().getStatus()).isEqualTo(403);
     }
 }

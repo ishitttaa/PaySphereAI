@@ -101,6 +101,10 @@ public class SecurityConfig {
                 auth.requestMatchers(HttpMethod.GET, "/api/v1/refunds/**")
                         .hasAnyRole(ADMIN, OPERATOR, "MERCHANT_ADMIN");
 
+                // Dashboard stats: a merchant admin gets only their own figures (filtered in DashboardController)
+                auth.requestMatchers(HttpMethod.GET, "/api/v1/dashboard/stats")
+                        .hasAnyRole(ADMIN, OPERATOR, "MERCHANT_ADMIN");
+
                 // Staff: read-only views
                 auth.requestMatchers(HttpMethod.GET, "/api/v1/orders/**",
                          "/api/v1/ledger/**", "/api/v1/settlements/**",
