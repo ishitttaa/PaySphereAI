@@ -9,7 +9,7 @@ This file serves two readers:
 2. **An AI assistant** that is taking over the work. Section 0 is written for you.
 
 Everything below is based on the actual code and on checks that were run, not on wishes.
-Where something was **not** verified, it says so. Last updated 28 November 2026. N9 order-read isolation is implemented on `feature/n9-order-isolation`; this branch is not merged. Cross-tenant isolation tests are still pending.
+Where something was **not** verified, it says so. Last updated 28 November 2026. N9 (multi-tenancy) is partly done: merchants, merchant onboarding and order-read isolation are merged and tested; payments, refunds, ledger and other data are not yet scoped per merchant.
 
 ---
 
@@ -42,7 +42,7 @@ Where something was **not** verified, it says so. Last updated 28 November 2026.
 
 ### A good first message from you
 
-> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and `mvn test` should pass (check the current count). N3 (`payment.failed`) and N7c (gateway reconciliation) are done. N9 order reads are scoped on `feature/n9-order-isolation`; cross-tenant tests are still pending and the branch is not merged. Have you merged the last pull request, and is CI green on `main`?"
+> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and `mvn test` should pass (check the current count). N3 (`payment.failed`) and N7c (gateway reconciliation) are done. N9 (multi-tenancy) is partly done: merchants, merchant onboarding, and fail-closed, cross-tenant-tested order reads are merged; payments, refunds and the other data families are not yet scoped per merchant. Have you merged the last pull request, and is CI green on `main`?"
 
 ---
 
@@ -102,7 +102,8 @@ Everything after the gateway (signature checks, amount checks, ledger, audit, ri
 | Frontend | **Not production-safe** (friend's work) | See section 14 |
 | Merchants table; merchant on products and orders (N9) | Merged | `MerchantSchemaIntegrationTest`, `MerchantOrderIntegrationTest` |
 | Optional merchant on users; merchant id in the login token (N9) | Merged | `MerchantTokenTest` |
-| Order reads scoped to the authenticated merchant | Implemented on `feature/n9-order-isolation` (not merged) | `OrderService`; 182-test local `mvn test` run passed. Cross-tenant test still pending |
+| Order reads scoped to the authenticated merchant; fail-closed (only `PLATFORM_*` roles are unrestricted) | Done (N9) | `MerchantIsolationIntegrationTest`, `OrderScopeFailClosedIntegrationTest` |
+| Merchant onboarding: create and list merchants; create a merchant admin user | Done (N9) | `MerchantOnboardingIntegrationTest`, `MerchantAdminOnboardingIntegrationTest` |
 | Full tenant isolation (all merchant data) | **Not complete** | Payments, refunds and other data families remain out of scope; do not treat the system as safe for several merchants |
 | Hashed, revocable API keys (N9) | **Not implemented** | |
 | Redis | **Container only** | No Redis library or code exists |
@@ -130,6 +131,7 @@ Java Project/                     (git root)
 │       │   ├── dashboard/        KPI endpoint
 │       │   ├── gateway/          PaymentGateway, RazorpayAdapter, SimulatedGateway, SimulatorController, GatewayException
 │       │   ├── ledger/           accounts, transactions, entries, LedgerService
+│       │   ├── merchant/         Merchant, MerchantService, MerchantController (onboarding: create merchant, create merchant admin)
 │       │   ├── order/            BusinessOrder, OrderService, OrderExpiryService, OrderExpiryJob
 │       │   ├── payment/          Payment, PaymentService (verify + webhook capture)
 │       │   ├── product/          product catalogue (price in paise)
@@ -205,7 +207,7 @@ Expected in the log: `PAYMENT SIMULATOR ACTIVE` (simulator mode), Flyway at the 
 mvn test
 ```
 
-Expected: `BUILD SUCCESS` with `Failures: 0, Errors: 0`. Latest local run on `feature/n9-order-isolation`: **182 tests, 0 failures, 0 errors**. This is a branch-local result; CI and merge are not yet verified.
+Expected: `BUILD SUCCESS` with `Failures: 0, Errors: 0`. Latest local run (after N9 step 4b): **208 tests**, 0 failures. If your count differs after adding tests, update this line.
 
 ---
 
@@ -246,13 +248,15 @@ Access is **deny by default**: any route not listed in `SecurityConfig` is close
 | `POST /orders` | public (storefront creates an order) |
 | `POST /payments/verify` | public (the HMAC signature is the protection) |
 | `POST /simulator/pay`, `/simulator/webhook`, `/simulator/refund-mode` | public, exist only when `PAYMENT_GATEWAY=simulator` |
-| `GET` orders | `PLATFORM_ADMIN` or `PLATFORM_OPERATOR`; `MERCHANT_ADMIN` can read only orders scoped to their merchant (implemented on `feature/n9-order-isolation`, not merged) |
+| `GET` orders | `PLATFORM_ADMIN` or `PLATFORM_OPERATOR` see all; `MERCHANT_ADMIN` sees only their own merchant's orders (fail-closed in `OrderService`) |
+| `POST /merchants`, `POST /merchants/{id}/admins` | `PLATFORM_ADMIN` only |
+| `GET /merchants` | `PLATFORM_ADMIN` or `PLATFORM_OPERATOR` |
 | `GET` payments, refunds, ledger, settlements, risk-flags, dashboard | `PLATFORM_ADMIN` or `PLATFORM_OPERATOR` |
 | `POST /refunds`, `POST /settlements/record`, `POST /risk-flags/*/dismiss`, `POST /reconciliation/run` | `PLATFORM_ADMIN` only |
 | `GET /audit-logs/**` | `PLATFORM_ADMIN` only |
 | Swagger (`/swagger-ui.html`, `/api-docs/**`) | open in development, denied in production |
 
-Orders contain customer name, email and phone. Platform staff can read orders; `MERCHANT_ADMIN` order reads are merchant-scoped on `feature/n9-order-isolation`. Cross-tenant tests are pending, so this is not yet verified as complete tenant isolation.
+Orders contain customer name, email and phone. Platform staff can read all orders. A `MERCHANT_ADMIN` reads only their own merchant's orders; this is fail-closed (a caller with no login, an unknown role, or no merchant sees nothing) and is proven by `MerchantIsolationIntegrationTest` and `OrderScopeFailClosedIntegrationTest`. Payments, refunds, ledger, settlements and the dashboard are still platform-staff only, so a merchant admin gets `403` there.
 
 Status codes worth knowing: `400` invalid request (for example a refund without `Idempotency-Key`), `401` not logged in or bad token, `403` wrong role, `409` business rule (for example refund larger than the balance, or an order whose gateway call failed), `429` too many failed logins, `500` webhook processing failed (so the gateway retries).
 
@@ -425,12 +429,12 @@ These are the project's invariants. Check every change against them.
 
 ## 10. Testing and CI
 
-`mvn test` runs the whole suite (170 tests after N3, before the N9 additions):
+`mvn test` runs the whole suite (208 tests after N9 step 4b):
 
 | Kind | Classes |
 |---|---|
 | Unit (Mockito and plain) | `LedgerServiceTest`, `OrderServiceTest`, `OrderExpiryServiceTest`, `BusinessOrderTransitionTest`, `RiskServiceTest`, `RiskDismissTest`, `WebhookServiceTest`, `PaymentServiceTest`, `RefundServiceTest`, `SettlementServiceTest`, `JwtServiceTest`, `JwtAuthFilterTest`, `CurrentUserTest`, `AuthServiceTest`, `LoginAttemptLimiterTest`, `SimulatedGatewayTest`, `GatewayExceptionTest`, `AuditServiceTest`, `ReconciliationServiceTest`, `GatewayPaymentReconcilerTest`, `MerchantTokenTest` |
-| Integration (need Docker) | `HealthControllerIntegrationTest`, `UserRepositoryIntegrationTest`, `HttpSecurityIntegrationTest`, `ReconciliationIntegrationTest`, `AuditIdentityIntegrationTest`, `WebhookFailurePersistenceIntegrationTest`, `PaymentFailedWebhookIntegrationTest`, `MerchantSchemaIntegrationTest`, `MerchantOrderIntegrationTest` |
+| Integration (need Docker) | `HealthControllerIntegrationTest`, `UserRepositoryIntegrationTest`, `HttpSecurityIntegrationTest`, `ReconciliationIntegrationTest`, `AuditIdentityIntegrationTest`, `WebhookFailurePersistenceIntegrationTest`, `PaymentFailedWebhookIntegrationTest`, `MerchantSchemaIntegrationTest`, `MerchantOrderIntegrationTest`, `MerchantSchemaIntegrationTest`, `MerchantOrderIntegrationTest`, `MerchantIsolationIntegrationTest`, `OrderScopeFailClosedIntegrationTest`, `MerchantOnboardingIntegrationTest`, `MerchantAdminOnboardingIntegrationTest` |
 
 **Testcontainers lesson:** `BaseIntegrationTest` starts **one** Postgres container for the whole run (static block, no `@Container`). With one container per class, Spring's cached context kept pointing at a stopped container and later test classes failed with "connection refused".
 
@@ -464,7 +468,10 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 18. **Webhook failure fix:** `processWebhook` is no longer `@Transactional`, so a failed event keeps its `FAILED` row (rule 9.6). Proven by `WebhookFailurePersistenceIntegrationTest`.
 19. **N7c:** recent gateway payments are compared with our records (`GatewayPaymentReconciler`).
 20. **N9, first steps:** merchants table (PR #23); merchant on products and orders, taken from the product (PR #24); optional merchant on users and merchant id in the login token (PR #25).
-21. **N9 order-read isolation (feature branch, not merged):** order list and order-by-id reads are scoped to the authenticated merchant; `MERCHANT_ADMIN` is allowed through the GET orders security rule. Local `mvn test`: 182 tests passed, 0 failures, 0 errors. Cross-tenant tests are still pending.
+21. **N9 order-read isolation (PR #26):** order list, status filter, by-id and by-reference reads are scoped to the authenticated merchant; `MERCHANT_ADMIN` is allowed through the GET orders security rule.
+22. **N9 cross-tenant tests:** `MerchantIsolationIntegrationTest` proves merchant A cannot list, filter or read merchant B's orders (404), a merchant user without a merchant sees nothing, platform staff see all, and a merchant admin gets 403 on payments, ledger, dashboard and audit logs.
+23. **N9 fail-closed scoping:** `merchantScope()` now gives no restriction only to `PLATFORM_*` roles; nobody logged in, or an unknown role, sees no orders. Proven by `OrderScopeFailClosedIntegrationTest` (2 of 3 tests failed before the fix).
+24. **N9 merchant onboarding:** `POST/GET /api/v1/merchants` and `POST /api/v1/merchants/{id}/admins` (platform admin). A merchant admin is created with a BCrypt-hashed password, the `MERCHANT_ADMIN` role and an audit entry in one transaction; the new admin can log in, the token carries `merchantId`, and the admin sees only their own orders.
 
 ---
 
@@ -480,7 +487,7 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 - The login rate limiter and the simulator keep state in memory (lost on restart, not shared between servers).
 - Settlements are entered manually by an admin; tax is not modelled; settlement currency is hardcoded to INR.
 - Payment method details (card, bank, wallet, VPA) are mostly not stored.
-- **Multi-tenancy is incomplete:** order read queries are merchant-scoped on `feature/n9-order-isolation`, but cross-tenant tests are pending and payments, refunds, and other data families are not isolated by this slice. The branch is not merged. Do not treat the system as safe for several merchants.
+- **Multi-tenancy is incomplete:** order reads are merchant-scoped and tested, and merchants and merchant admins can be onboarded, but payments, refunds, ledger, settlements, risk flags, dashboard and reconciliation are not scoped per merchant (merchant admins get `403` on them). Do not treat the system as safe for several merchants until every data family is scoped and cross-tenant tested.
 - `SecurityConfig` has a redundant duplicate admin rule for refunds and risk-flag dismissal; access is unaffected.
 - Redis runs in Docker but nothing uses it.
 - `spring.jpa.open-in-view` is on (warning in the log).
@@ -495,12 +502,13 @@ Each item lists an acceptance test. Keep the steps small, one branch each.
 
 **N10. Dashboard numbers. (Done except pagination of list endpoints.)** SQL aggregate queries instead of `findAll()`; revenue net of refunds; pagination. Acceptance: with a known set of payments and refunds the dashboard figures equal the hand-computed ones (add an integration test).
 
-**N9. Multi-tenancy** (required by the original project proposal). **In progress.** **Security-critical:** order read scoping is implemented on `feature/n9-order-isolation`, with a local 182-test suite passing. The branch is not merged and cross-tenant tests are still required (merchant A must never read, refund or reconcile merchant B's data). Extend `HttpSecurityIntegrationTest` and test one table family per step.
+**N9. Multi-tenancy** (required by the original project proposal). **In progress.** Done: merchants table, merchant on products, orders and users, merchant id in the token, fail-closed order-read scoping with cross-tenant tests, merchant onboarding (create merchant, create merchant admin). **Still to do (security-critical, one table family per step, cross-tenant test first):** scoped reads for payments, refunds, ledger, settlements and dashboard for merchant admins; merchant-scoped refunds and reconciliation (merchant A must never refund or reconcile merchant B's data); products managed per merchant; hashed, revocable API keys; merchant suspension handling at login.
 
 - [x] Merchants table
 - [x] Merchant on products and orders
 - [x] Merchant on users and in the login token
-- [x] Order list and order-by-id reads are scoped to the authenticated merchant on `feature/n9-order-isolation` (cross-tenant tests pending; not merged)
+- [x] Order reads (list, status filter, by id, by reference) are scoped to the authenticated merchant, fail-closed, with cross-tenant tests
+- [x] Merchant onboarding: create and list merchants, create a merchant admin user (platform admin only)
 - [ ] Payments, then refunds
 - [ ] Ledger, audit, risk flags, settlements, dashboard, reconciliation. The ledger and audit tables block `UPDATE`, so backfill without disabling the append-only triggers
 - [ ] Merchant-operator role
@@ -580,7 +588,7 @@ Do not call the project production-ready until every box is ticked.
 - [ ] HTTPS and security headers; Swagger closed; actuator limited
 - [ ] Reconciliation running and **alerting** (N12), including gateway payment comparison (N7c)
 - [ ] Backups tested; logs free of secrets and PII
-- [ ] Multi-tenant isolation tests passing (N9)
+- [ ] Multi-tenant isolation tests passing for every data family (N9: orders done; payments, refunds, ledger, settlements pending)
 - [ ] Dependency and secret scanning in CI (a dedicated scanner, not only the simple grep)
 - [ ] Legal and compliance review (payments are regulated; this project alone is not a licensed payment system)
 
