@@ -25,6 +25,10 @@ public interface BusinessOrderRepository extends JpaRepository<BusinessOrder, UU
     Page<BusinessOrder> findByStatusOrderByCreatedAtDesc(BusinessOrderStatus status, Pageable pageable);
 
     Page<BusinessOrder> findAllByOrderByCreatedAtDesc(Pageable pageable);
+    Page<BusinessOrder> findByMerchantIdOrderByCreatedAtDesc(UUID merchantId, Pageable pageable);
+
+    Page<BusinessOrder> findByMerchantIdAndStatusOrderByCreatedAtDesc(
+        UUID merchantId, BusinessOrderStatus status, Pageable pageable);
 
     boolean existsByOrderReference(String orderReference);
 

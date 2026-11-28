@@ -85,7 +85,10 @@ public class SecurityConfig {
                 auth.requestMatchers("/api/v1/audit-logs/**").hasRole(ADMIN);
                 auth.requestMatchers(HttpMethod.POST, "/api/v1/refunds", "/api/v1/settlements/record",
                         "/api/v1/risk-flags/*/dismiss", "/api/v1/reconciliation/run").hasRole(ADMIN);
-                        
+                
+                // Orders: staff see all, a merchant admin sees only their own (filtered in OrderService)
+                auth.requestMatchers(HttpMethod.GET, "/api/v1/orders", "/api/v1/orders/**")
+                        .hasAnyRole(ADMIN, OPERATOR, "MERCHANT_ADMIN");    
                 // Staff: read-only views
                 auth.requestMatchers(HttpMethod.GET, "/api/v1/orders/**", "/api/v1/payments/**",
                         "/api/v1/refunds/**", "/api/v1/ledger/**", "/api/v1/settlements/**",

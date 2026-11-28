@@ -9,7 +9,7 @@ This file serves two readers:
 2. **An AI assistant** that is taking over the work. Section 0 is written for you.
 
 Everything below is based on the actual code and on checks that were run, not on wishes.
-Where something was **not** verified, it says so. Last updated after **N11** (audit identity) and the zero-fee settlement fix.
+Where something was **not** verified, it says so. Last updated 28 November 2026. N9 order-read isolation is implemented on `feature/n9-order-isolation`; this branch is not merged. Cross-tenant isolation tests are still pending.
 
 ---
 
@@ -42,7 +42,7 @@ Where something was **not** verified, it says so. Last updated after **N11** (au
 
 ### A good first message from you
 
-> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and 170 tests pass. N3 (`payment.failed`) and N7c (gateway reconciliation) are done; the next planned step is N9 (multi-tenancy). Have you merged the last pull request, and is CI green on `main`?"
+> "I've read the handover. Current state: the simulator-based flow works end to end, the API is locked with JWT roles, refunds are idempotent and self-healing (webhooks plus nightly reconciliation), the audit trail names the real actor, and `mvn test` should pass (check the current count). N3 (`payment.failed`) and N7c (gateway reconciliation) are done. N9 order reads are scoped on `feature/n9-order-isolation`; cross-tenant tests are still pending and the branch is not merged. Have you merged the last pull request, and is CI green on `main`?"
 
 ---
 
@@ -54,9 +54,9 @@ PaySphere sits between a merchant's storefront and a payment gateway. It:
 - creates gateway orders and **verifies payments cryptographically**, then checks the amount and capture status with the gateway,
 - records money movement in an **append-only double-entry ledger** (debits always equal credits),
 - processes **refunds** safely (duplicate-proof, race-proof, timeout-safe) and settles refunds whose outcome was unknown,
-- receives **webhooks** idempotently (payment captured, refund processed, refund failed),
+- receives **webhooks** idempotently (payment captured, payment failed, refund processed, refund failed),
 - **expires** unpaid orders but never loses a late payment,
-- **reconciles** its own books every night, and asks the gateway about refunds stuck in `PENDING`,
+- **reconciles** its own books every night, compares recent gateway payments with its records, and asks the gateway about refunds stuck in `PENDING`,
 - keeps an **audit trail** that names the real person, address and browser, and runs **risk rules**,
 - exposes staff-only APIs behind **JWT login with roles**.
 
@@ -100,7 +100,11 @@ Everything after the gateway (signature checks, amount checks, ledger, audit, ri
 | Comparing gateway payments with ours; finding paid-but-unrecorded payments | **Done (N7c)** | Last 48 hours of orders, last 24 hours of payments, up to 200 per run |
 | CI (GitHub Actions) | Green | Build, full test suite, and a leak scan of text files |
 | Frontend | **Not production-safe** (friend's work) | See section 14 |
-| Multi-tenancy, API keys, merchant roles | **Not implemented** (N9) | |
+| Merchants table; merchant on products and orders (N9) | Merged | `MerchantSchemaIntegrationTest`, `MerchantOrderIntegrationTest` |
+| Optional merchant on users; merchant id in the login token (N9) | Merged | `MerchantTokenTest` |
+| Order reads scoped to the authenticated merchant | Implemented on `feature/n9-order-isolation` (not merged) | `OrderService`; 182-test local `mvn test` run passed. Cross-tenant test still pending |
+| Full tenant isolation (all merchant data) | **Not complete** | Payments, refunds and other data families remain out of scope; do not treat the system as safe for several merchants |
+| Hashed, revocable API keys (N9) | **Not implemented** | |
 | Redis | **Container only** | No Redis library or code exists |
 | Dashboard numbers | Fixed (N10) | Sums computed in the database; revenue is net of refunds |
 | Real Razorpay mode | **Never run** | No account |
@@ -109,19 +113,12 @@ Everything after the gateway (signature checks, amount checks, ledger, audit, ri
 
 ## 3. Repository layout, and how to work with git
 
-### 3.1 The two-copies trap
+### 3.1 Where to work
 
-On the owner's machine there are **two copies** of the project:
-
-```
-D:\PaySphereAI-main\PaySphereAI-main\                 <- OUTER folder: stale copy, not a git repo. Do NOT edit.
-D:\PaySphereAI-main\PaySphereAI-main\PaySphereAI\     <- NESTED folder: the real git repo. Work here.
-```
-
-Always `cd` into the **nested** folder and open **that** folder in VS Code. Commands such as `git status` print `not a git repository` when run from the outer folder; that is the sign you are in the wrong place. Read the prompt before running a command: it should end in `...\PaySphereAI>` (repo root) or `...\PaySphereAI\backend>`.
+The repository is in the Desktop **`Java Project`** folder. Open **that** folder in VS Code. Read the prompt before running a command: it should end in `...\Java Project>` (repo root) or `...\Java Project\backend>`. `git status` printing `not a git repository` means you are in the wrong place.
 
 ```
-PaySphereAI/                      (git root)
+Java Project/                     (git root)
 ├── backend/                      Spring Boot app (Maven)
 │   ├── pom.xml
 │   └── src/
@@ -143,7 +140,7 @@ PaySphereAI/                      (git root)
 │       │   ├── settlement/       Settlement, SettlementService
 │       │   ├── user/             User, UserRepository
 │       │   └── webhook/          WebhookEvent, WebhookService, controller
-│       ├── main/resources/       application.yml, db/migration/V1..V8
+│       ├── main/resources/       application.yml, db/migration/V1..V10
 │       └── test/java/            unit tests + Testcontainers integration tests
 ├── frontend/                     React + Vite + TypeScript (friend maintains)
 ├── infrastructure/               docker-compose.yml (Postgres, Redis)
@@ -167,12 +164,12 @@ PaySphereAI/                      (git root)
 
 ## 4. Running locally (Windows PowerShell)
 
-**Prerequisites:** JDK 21, Docker Desktop, Maven 3.9.x (installed on the owner's machine under `%USERPROFILE%\tools\apache-maven-3.9.9`), Node 18+ for the frontend.
+**Prerequisites:** JDK 21, Docker Desktop, Maven 3.9.x (installed on the owner's machine under `C:\tools\apache-maven-3.9.9`), Node 18+ for the frontend.
 
 The Maven wrapper (`mvnw.cmd`) in the repo is **broken** (hardcoded JDK path, missing wrapper jar). Use the installed `mvn`. The PATH entry was added permanently; if `mvn` is not recognised, restart VS Code completely or run, for the current terminal:
 
 ```powershell
-$env:Path += ";$env:USERPROFILE\tools\apache-maven-3.9.9\bin"
+$env:Path += ";C:\tools\apache-maven-3.9.9\bin"
 ```
 
 **1. Start the database**
@@ -200,7 +197,7 @@ cd <repo>\backend
 mvn spring-boot:run
 ```
 
-Expected in the log: `PAYMENT SIMULATOR ACTIVE` (simulator mode), Flyway at the latest version (v8), and `Started PaySphereApplication`. Leave this terminal alone while the app runs. Use a **second terminal** (and load `.env` there too) for test commands. A "Unable to connect to the remote server" error means the app is not running (or you forgot to restart it after changing code).
+Expected in the log: `PAYMENT SIMULATOR ACTIVE` (simulator mode), Flyway at the latest version (v10), and `Started PaySphereApplication`. Leave this terminal alone while the app runs. Use a **second terminal** (and load `.env` there too) for test commands. A "Unable to connect to the remote server" error means the app is not running (or you forgot to restart it after changing code).
 
 **4. Run all tests** (Docker must be running):
 
@@ -208,7 +205,7 @@ Expected in the log: `PAYMENT SIMULATOR ACTIVE` (simulator mode), Flyway at the 
 mvn test
 ```
 
-Expected: `Tests run: 170, Failures: 0, Errors: 0`. (If your count differs after adding tests, update this line.)
+Expected: `BUILD SUCCESS` with `Failures: 0, Errors: 0`. Latest local run on `feature/n9-order-isolation`: **182 tests, 0 failures, 0 errors**. This is a branch-local result; CI and merge are not yet verified.
 
 ---
 
@@ -249,12 +246,13 @@ Access is **deny by default**: any route not listed in `SecurityConfig` is close
 | `POST /orders` | public (storefront creates an order) |
 | `POST /payments/verify` | public (the HMAC signature is the protection) |
 | `POST /simulator/pay`, `/simulator/webhook`, `/simulator/refund-mode` | public, exist only when `PAYMENT_GATEWAY=simulator` |
-| `GET` orders, payments, refunds, ledger, settlements, risk-flags, dashboard | `PLATFORM_ADMIN` or `PLATFORM_OPERATOR` |
+| `GET` orders | `PLATFORM_ADMIN` or `PLATFORM_OPERATOR`; `MERCHANT_ADMIN` can read only orders scoped to their merchant (implemented on `feature/n9-order-isolation`, not merged) |
+| `GET` payments, refunds, ledger, settlements, risk-flags, dashboard | `PLATFORM_ADMIN` or `PLATFORM_OPERATOR` |
 | `POST /refunds`, `POST /settlements/record`, `POST /risk-flags/*/dismiss`, `POST /reconciliation/run` | `PLATFORM_ADMIN` only |
 | `GET /audit-logs/**` | `PLATFORM_ADMIN` only |
 | Swagger (`/swagger-ui.html`, `/api-docs/**`) | open in development, denied in production |
 
-Orders are staff-only to read because order responses contain customer name, email and phone.
+Orders contain customer name, email and phone. Platform staff can read orders; `MERCHANT_ADMIN` order reads are merchant-scoped on `feature/n9-order-isolation`. Cross-tenant tests are pending, so this is not yet verified as complete tenant isolation.
 
 Status codes worth knowing: `400` invalid request (for example a refund without `Idempotency-Key`), `401` not logged in or bad token, `403` wrong role, `409` business rule (for example refund larger than the balance, or an order whose gateway call failed), `429` too many failed logins, `500` webhook processing failed (so the gateway retries).
 
@@ -339,8 +337,9 @@ Amounts are **integers in paise** (`long`). Never floating point.
 **Reconciliation** (`ReconciliationJob` nightly at 02:00, or `POST /reconciliation/run` by an admin):
 
 1. **Settle stuck refunds.** For each `PENDING` refund older than **30 minutes**, ask the gateway for the payment's refunds and match by amount (not already linked to another of our refunds, not older than 5 minutes before ours): gateway `processed` → apply; `failed` → fail ours; still `pending` → link the gateway id and wait; **no matching refund** → it never happened, mark `FAILED`. Each refund is settled in its own transaction, so one failure cannot spoil the rest. If the gateway cannot be asked, the refund stays `PENDING`.
-2. **Check our own books** (`ReconciliationQueries`): captured payment without ledger posting; ledger amount differs from the payment; processed refund without ledger posting; failed refund whose posting was never reversed; unbalanced ledger transaction; payment refunded total differs from its processed refunds; refund `PENDING` too long.
-3. Each problem becomes a **risk flag** with rule code `RECON_...` (once per entity and rule; a dismissed flag is not re-raised) and the run is audited.
+2. **Compare with the gateway** (N7c): orders from the last 48 hours and payments from the last 24 hours, up to 200 per run (limits in section 12).
+3. **Check our own books** (`ReconciliationQueries`): captured payment without ledger posting; ledger amount differs from the payment; processed refund without ledger posting; failed refund whose posting was never reversed; unbalanced ledger transaction; payment refunded total differs from its processed refunds; refund `PENDING` too long.
+4. Each problem becomes a **risk flag** with rule code `RECON_...` (once per entity and rule; a dismissed flag is not re-raised) and the run is audited.
 
 ### 7.6 The payment simulator
 
@@ -367,6 +366,8 @@ Flyway owns the schema; Hibernate only validates it.
 | V6 | ledger append-only triggers (blocks UPDATE, DELETE, TRUNCATE) |
 | V7 | `audit_logs` append-only triggers |
 | V8 | adds the `PLATFORM_OPERATOR` role |
+| V9 | `merchants` table |
+| V10 | merchant on `products` and `business_orders` |
 
 **Rules:** never edit a migration that has been applied; add a new `V<next>__description.sql` (two underscores after the version). Because `audit_logs.actor_user_id` references `users ON DELETE SET NULL`, a user with audit history can no longer be deleted; disable users instead.
 
@@ -424,12 +425,12 @@ These are the project's invariants. Check every change against them.
 
 ## 10. Testing and CI
 
-`mvn test` runs **170 tests**:
+`mvn test` runs the whole suite (170 tests after N3, before the N9 additions):
 
 | Kind | Classes |
 |---|---|
-| Unit (Mockito and plain) | `LedgerServiceTest`, `OrderServiceTest`, `OrderExpiryServiceTest`, `BusinessOrderTransitionTest`, `RiskServiceTest`, `RiskDismissTest`, `WebhookServiceTest`, `PaymentServiceTest`, `RefundServiceTest`, `SettlementServiceTest`, `JwtServiceTest`, `JwtAuthFilterTest`, `CurrentUserTest`, `AuthServiceTest`, `LoginAttemptLimiterTest`, `SimulatedGatewayTest`, `GatewayExceptionTest`, `AuditServiceTest`, `ReconciliationServiceTest` |
-| Integration (need Docker) | `HealthControllerIntegrationTest`, `UserRepositoryIntegrationTest`, `HttpSecurityIntegrationTest`, `ReconciliationIntegrationTest`, `AuditIdentityIntegrationTest`, `WebhookFailurePersistenceIntegrationTest` |
+| Unit (Mockito and plain) | `LedgerServiceTest`, `OrderServiceTest`, `OrderExpiryServiceTest`, `BusinessOrderTransitionTest`, `RiskServiceTest`, `RiskDismissTest`, `WebhookServiceTest`, `PaymentServiceTest`, `RefundServiceTest`, `SettlementServiceTest`, `JwtServiceTest`, `JwtAuthFilterTest`, `CurrentUserTest`, `AuthServiceTest`, `LoginAttemptLimiterTest`, `SimulatedGatewayTest`, `GatewayExceptionTest`, `AuditServiceTest`, `ReconciliationServiceTest`, `GatewayPaymentReconcilerTest`, `MerchantTokenTest` |
+| Integration (need Docker) | `HealthControllerIntegrationTest`, `UserRepositoryIntegrationTest`, `HttpSecurityIntegrationTest`, `ReconciliationIntegrationTest`, `AuditIdentityIntegrationTest`, `WebhookFailurePersistenceIntegrationTest`, `PaymentFailedWebhookIntegrationTest`, `MerchantSchemaIntegrationTest`, `MerchantOrderIntegrationTest` |
 
 **Testcontainers lesson:** `BaseIntegrationTest` starts **one** Postgres container for the whole run (static block, no `@Container`). With one container per class, Spring's cached context kept pointing at a stopped container and later test classes failed with "connection refused".
 
@@ -461,6 +462,9 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 16. **Zero-fee settlement fix:** `postSettlement` skips zero-amount entries (fees = 0, or fees = gross), with two new tests in `LedgerServiceTest`.
 17. **N3:** `payment.failed` webhook records failed attempts; captures upgrade a FAILED row (checkout, webhook and reconciliation); reconciliation still finds a paid retry after a failed attempt.
 18. **Webhook failure fix:** `processWebhook` is no longer `@Transactional`, so a failed event keeps its `FAILED` row (rule 9.6). Proven by `WebhookFailurePersistenceIntegrationTest`.
+19. **N7c:** recent gateway payments are compared with our records (`GatewayPaymentReconciler`).
+20. **N9, first steps:** merchants table (PR #23); merchant on products and orders, taken from the product (PR #24); optional merchant on users and merchant id in the login token (PR #25).
+21. **N9 order-read isolation (feature branch, not merged):** order list and order-by-id reads are scoped to the authenticated merchant; `MERCHANT_ADMIN` is allowed through the GET orders security rule. Local `mvn test`: 182 tests passed, 0 failures, 0 errors. Cross-tenant tests are still pending.
 
 ---
 
@@ -476,6 +480,8 @@ CI is `.github/workflows/backend-ci.yml` (`PaySphere Backend CI / Build, Test & 
 - The login rate limiter and the simulator keep state in memory (lost on restart, not shared between servers).
 - Settlements are entered manually by an admin; tax is not modelled; settlement currency is hardcoded to INR.
 - Payment method details (card, bank, wallet, VPA) are mostly not stored.
+- **Multi-tenancy is incomplete:** order read queries are merchant-scoped on `feature/n9-order-isolation`, but cross-tenant tests are pending and payments, refunds, and other data families are not isolated by this slice. The branch is not merged. Do not treat the system as safe for several merchants.
+- `SecurityConfig` has a redundant duplicate admin rule for refunds and risk-flag dismissal; access is unaffected.
 - Redis runs in Docker but nothing uses it.
 - `spring.jpa.open-in-view` is on (warning in the log).
 - `mvnw.cmd` is broken and has an uncommitted local edit; do not commit it.
@@ -489,8 +495,18 @@ Each item lists an acceptance test. Keep the steps small, one branch each.
 
 **N10. Dashboard numbers. (Done except pagination of list endpoints.)** SQL aggregate queries instead of `findAll()`; revenue net of refunds; pagination. Acceptance: with a known set of payments and refunds the dashboard figures equal the hand-computed ones (add an integration test).
 
-**N9. Multi-tenancy** (required by the original project proposal). A `merchants` table, `merchant_id` on orders, payments, refunds, ledger and audit, a `MERCHANT_ADMIN` and merchant-operator model, hashed revocable API keys, and tenant-scoped queries and endpoints. **Security-critical:** write cross-tenant access tests first (merchant A must never read, refund or reconcile merchant B's data), and extend `HttpSecurityIntegrationTest`. This is the largest remaining change: touch one table family per step.
+**N9. Multi-tenancy** (required by the original project proposal). **In progress.** **Security-critical:** order read scoping is implemented on `feature/n9-order-isolation`, with a local 182-test suite passing. The branch is not merged and cross-tenant tests are still required (merchant A must never read, refund or reconcile merchant B's data). Extend `HttpSecurityIntegrationTest` and test one table family per step.
 
+- [x] Merchants table
+- [x] Merchant on products and orders
+- [x] Merchant on users and in the login token
+- [x] Order list and order-by-id reads are scoped to the authenticated merchant on `feature/n9-order-isolation` (cross-tenant tests pending; not merged)
+- [ ] Payments, then refunds
+- [ ] Ledger, audit, risk flags, settlements, dashboard, reconciliation. The ledger and audit tables block `UPDATE`, so backfill without disabling the append-only triggers
+- [ ] Merchant-operator role
+- [ ] Hashed, revocable API keys
+
+**Planned, after N9: live dashboard updates** (Server-Sent Events, sent only after commit, filtered by merchant, no customer data). Not in `main`.
 
 **N12. Observability.** Structured logs with correlation ids, metrics, and alerts for `FAILED` webhooks, old `PENDING` refunds, ledger imbalance and reconciliation findings.
 
@@ -531,7 +547,7 @@ The frontend is **not safe to demo as real** yet:
 
 ## 15. Pitfalls already hit (avoid repeating)
 
-- **Editing or running commands in the wrong folder** (outer vs nested). `not a git repository` is the tell-tale.
+- **Editing or running commands in the wrong folder**. `not a git repository` is the tell-tale.
 - **Running `mvn` from the repo root.** `pom.xml` is in `backend/`; from the root Maven says "no POM in this directory".
 - **Unsaved edits** reported as "the fix didn't work".
 - **Pasting commands or script text into the wrong place**, or many commands at once; the screen overlaps and the output cannot be trusted. Paste one block at a time, and read the prompt first.

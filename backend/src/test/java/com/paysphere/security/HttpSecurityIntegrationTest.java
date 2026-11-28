@@ -51,8 +51,6 @@ class HttpSecurityIntegrationTest extends BaseIntegrationTest {
             "POST /api/v1/webhooks/razorpay");
 
     private static final List<String> STAFF = List.of(
-            "GET /api/v1/orders",
-            "GET /api/v1/orders/" + ID,
             "GET /api/v1/payments",
             "GET /api/v1/refunds/" + ID,
             "GET /api/v1/ledger/accounts",
@@ -215,4 +213,13 @@ class HttpSecurityIntegrationTest extends BaseIntegrationTest {
         assertThat(result.getResponse().getStatus()).isEqualTo(400);
         assertThat(result.getResponse().getContentAsString()).contains("Idempotency-Key");
     }
+    @Test
+    void merchantAdminCanReachOrderReadRoutes() throws Exception {
+    String merchant = tokenWith("MERCHANT_ADMIN");
+
+    assertThat(call("GET /api/v1/orders", merchant))
+            .isEqualTo(Outcome.REACHED_APP);
+    assertThat(call("GET /api/v1/orders/" + ID, merchant))
+            .isEqualTo(Outcome.REACHED_APP);
+}
 }
